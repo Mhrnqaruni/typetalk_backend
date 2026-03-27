@@ -1,0 +1,45 @@
+{
+  "name": "typetalk-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeTalk backend control plane",
+  "main": "dist/server.js",
+  "scripts": {
+    "billing:webhooks:retry": "tsx src/jobs/webhook-retry.ts",
+    "build": "tsc -p tsconfig.json",
+    "dev": "cross-env NODE_ENV=development tsx watch src/server.ts",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:seed": "prisma db seed",
+    "start": "cross-env NODE_ENV=production node dist/server.js",
+    "test": "cross-env NODE_ENV=test vitest run",
+    "test:watch": "cross-env NODE_ENV=test vitest",
+    "prisma:generate": "prisma generate",
+    "prisma:validate": "prisma validate"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@prisma/client": "^6.6.0",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "google-auth-library": "^10.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "stripe": "^21.0.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/node": "^22.13.10",
+    "cross-env": "^7.0.3",
+    "prisma": "^6.6.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}

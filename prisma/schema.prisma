@@ -1,0 +1,573 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum AuthProvider {
+  GOOGLE
+}
+
+enum ChallengeType {
+  OTP
+}
+
+enum ChallengePurpose {
+  SIGN_IN
+  LINK_GOOGLE
+}
+
+enum OrganizationType {
+  PERSONAL
+  TEAM
+}
+
+enum OrganizationRole {
+  OWNER
+  MEMBER
+}
+
+enum DevicePlatform {
+  ANDROID
+  WINDOWS
+}
+
+enum BillingProvider {
+  STRIPE
+  GOOGLE_PLAY
+}
+
+enum BillingInterval {
+  NONE
+  MONTHLY
+  YEARLY
+}
+
+enum SubscriptionStatus {
+  INCOMPLETE
+  TRIALING
+  ACTIVE
+  GRACE
+  PAYMENT_ISSUE
+  CANCELED
+  EXPIRED
+}
+
+enum EntitlementCode {
+  FREE
+  TRIAL_ACTIVE
+  PRO_ACTIVE
+  PRO_GRACE
+  PAYMENT_ISSUE
+  EXPIRED
+  SUSPENDED
+}
+
+enum EntitlementStatus {
+  ACTIVE
+  LIMITED
+  INACTIVE
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+enum PurchaseAcknowledgmentStatus {
+  NOT_REQUIRED
+  PENDING
+  ACKNOWLEDGED
+  FAILED
+}
+
+enum RealtimeSessionStatus {
+  OPEN
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+enum UsageEventStatus {
+  FINALIZED
+  TELEMETRY
+}
+
+enum SecuritySeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model User {
+  id                 String               @id @default(cuid())
+  primaryEmail       String               @map("primary_email")
+  emailVerifiedAt    DateTime?            @map("email_verified_at")
+  displayName        String?              @map("display_name")
+  avatarUrl          String?              @map("avatar_url")
+  status             UserStatus           @default(ACTIVE)
+  createdAt          DateTime             @default(now()) @map("created_at")
+  updatedAt          DateTime             @updatedAt @map("updated_at")
+  deletedAt          DateTime?            @map("deleted_at")
+  appProfiles        AppProfile[]
+  authIdentities     AuthIdentity[]
+  dictionaryEntries  DictionaryEntry[]
+  devices            Device[]
+  entitlements       Entitlement[]
+  memberships        OrganizationMember[]
+  ownedOrganizations Organization[]       @relation("organization_owner")
+  preferences        UserPreference?
+  quotaWindows       QuotaWindow[]
+  realtimeSessions   RealtimeSession[]
+  sessions           Session[]
+  securityEvents     SecurityEvent[]
+  usageEvents        UsageEvent[]
+  usageRollupsWeekly UsageRollupWeekly[]
+  writingProfiles    WritingProfile[]
+
+  @@index([primaryEmail, deletedAt])
+  @@map("users")
+}
+
+model AuthIdentity {
+  id             String       @id @default(cuid())
+  userId         String       @map("user_id")
+  provider       AuthProvider
+  providerUserId String       @map("provider_user_id")
+  providerEmail  String?      @map("provider_email")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("auth_identities")
+}
+
+model EmailChallenge {
+  id              String           @id @default(cuid())
+  email           String
+  challengeType   ChallengeType    @default(OTP) @map("challenge_type")
+  codeHash        String           @map("code_hash")
+  purpose         ChallengePurpose
+  requestedIpHash String?          @map("requested_ip_hash")
+  attemptCount    Int              @default(0) @map("attempt_count")
+  maxAttempts     Int              @default(5) @map("max_attempts")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  expiresAt       DateTime         @map("expires_at")
+  usedAt          DateTime?        @map("used_at")
+  supersededAt    DateTime?        @map("superseded_at")
+
+  @@index([email, purpose, createdAt])
+  @@map("email_challenges")
+}
+
+model Session {
+  id                String    @id @default(cuid())
+  userId            String    @map("user_id")
+  deviceId          String?   @map("device_id")
+  refreshTokenHash  String    @map("refresh_token_hash")
+  userAgent         String?   @map("user_agent")
+  lastIpHash        String?   @map("last_ip_hash")
+  lastIpCountryCode String?   @map("last_ip_country_code")
+  lastUsedAt        DateTime  @default(now()) @map("last_used_at")
+  expiresAt         DateTime  @map("expires_at")
+  revokedAt         DateTime? @map("revoked_at")
+  reauthenticatedAt DateTime? @map("reauthenticated_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  device            Device?   @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model Organization {
+  id                String               @id @default(cuid())
+  name              String
+  type              OrganizationType
+  ownerUserId       String               @map("owner_user_id")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  appProfiles       AppProfile[]
+  dictionaryEntries DictionaryEntry[]
+  entitlements      Entitlement[]
+  members           OrganizationMember[]
+  ownerUser         User                 @relation("organization_owner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  providerCustomers ProviderCustomer[]
+  purchaseTokens    PurchaseToken[]
+  quotaWindows      QuotaWindow[]
+  realtimeSessions  RealtimeSession[]
+  securityEvents    SecurityEvent[]
+  subscriptions     Subscription[]
+  usageEvents       UsageEvent[]
+  usageRollups      UsageRollupWeekly[]
+  writingProfiles   WritingProfile[]
+
+  @@index([ownerUserId])
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  organizationId String           @map("organization_id")
+  userId         String           @map("user_id")
+  role           OrganizationRole
+  createdAt      DateTime         @default(now()) @map("created_at")
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+model Device {
+  id             String          @id @default(cuid())
+  userId         String          @map("user_id")
+  platform       DevicePlatform
+  installationId String          @map("installation_id")
+  deviceName     String?         @map("device_name")
+  osVersion      String?         @map("os_version")
+  appVersion     String?         @map("app_version")
+  locale         String?
+  timezone       String?
+  lastSeenAt     DateTime        @default(now()) @map("last_seen_at")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  realtimeSessions RealtimeSession[]
+  securityEvents SecurityEvent[]
+  sessions       Session[]
+  usageEvents    UsageEvent[]
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, installationId])
+  @@index([userId, lastSeenAt])
+  @@map("devices")
+}
+
+model UserPreference {
+  userId          String   @id @map("user_id")
+  defaultLanguage String   @default("auto") @map("default_language")
+  autoPunctuation Boolean  @default(true) @map("auto_punctuation")
+  removeFillers   Boolean  @default(false) @map("remove_fillers")
+  autoFormat      Boolean  @default(true) @map("auto_format")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+model DictionaryEntry {
+  id             String       @id @default(cuid())
+  userId         String       @map("user_id")
+  organizationId String       @map("organization_id")
+  phrase         String
+  createdAt      DateTime     @default(now()) @map("created_at")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, organizationId, createdAt, id])
+  @@map("dictionary_entries")
+}
+
+model WritingProfile {
+  id             String       @id @default(cuid())
+  userId         String       @map("user_id")
+  organizationId String       @map("organization_id")
+  name           String
+  tone           String
+  rulesJson      Json         @map("rules_json")
+  appProfiles    AppProfile[]
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, organizationId, id])
+  @@map("writing_profiles")
+}
+
+model AppProfile {
+  id               String          @id @default(cuid())
+  userId           String          @map("user_id")
+  organizationId   String          @map("organization_id")
+  appKey           String          @map("app_key")
+  writingProfileId String?         @map("writing_profile_id")
+  settingsJson     Json            @map("settings_json")
+  organization     Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  writingProfile   WritingProfile? @relation(fields: [writingProfileId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, organizationId, appKey])
+  @@index([userId, organizationId, appKey, id])
+  @@map("app_profiles")
+}
+
+model IdempotencyKey {
+  scope            String
+  idempotencyKey   String   @map("idempotency_key")
+  requestHash      String   @map("request_hash")
+  responseStatus   Int?     @map("response_status")
+  responseBodyJson Json?    @map("response_body_json")
+  createdAt        DateTime @default(now()) @map("created_at")
+  expiresAt        DateTime @map("expires_at")
+
+  @@id([scope, idempotencyKey])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
+model Plan {
+  id               String          @id @default(cuid())
+  code             String          @unique
+  displayName      String          @map("display_name")
+  amountCents      Int             @map("amount_cents")
+  currency         String
+  billingInterval  BillingInterval @map("billing_interval")
+  weeklyWordLimit  Int             @map("weekly_word_limit")
+  trialDays        Int             @default(0) @map("trial_days")
+  stripePriceId    String?         @unique @map("stripe_price_id")
+  googleProductId  String?         @map("google_product_id")
+  googleBasePlanId String?         @map("google_base_plan_id")
+  isActive         Boolean         @default(true) @map("is_active")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+  purchaseTokens   PurchaseToken[]
+  subscriptions    Subscription[]
+
+  @@unique([googleProductId, googleBasePlanId])
+  @@map("plans")
+}
+
+model ProviderCustomer {
+  id                 String          @id @default(cuid())
+  organizationId     String          @map("organization_id")
+  provider           BillingProvider
+  externalCustomerId String          @map("external_customer_id")
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+  organization       Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptions      Subscription[]
+
+  @@unique([organizationId, provider])
+  @@unique([provider, externalCustomerId])
+  @@index([organizationId])
+  @@map("provider_customers")
+}
+
+model Subscription {
+  id                     String             @id @default(cuid())
+  organizationId         String             @map("organization_id")
+  planId                 String             @map("plan_id")
+  providerCustomerId     String?            @map("provider_customer_id")
+  provider               BillingProvider
+  externalSubscriptionId String             @map("external_subscription_id")
+  status                 SubscriptionStatus
+  isTrial                Boolean            @default(false) @map("is_trial")
+  conflictFlag           Boolean            @default(false) @map("conflict_flag")
+  trialEndsAt            DateTime?          @map("trial_ends_at")
+  currentPeriodStart     DateTime?          @map("current_period_start")
+  currentPeriodEnd       DateTime?          @map("current_period_end")
+  canceledAt             DateTime?          @map("canceled_at")
+  createdAt              DateTime           @default(now()) @map("created_at")
+  updatedAt              DateTime           @updatedAt @map("updated_at")
+  organization           Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan                   Plan               @relation(fields: [planId], references: [id], onDelete: Restrict)
+  primaryForEntitlement  Entitlement[]      @relation("primary_subscription")
+  providerCustomer       ProviderCustomer?  @relation(fields: [providerCustomerId], references: [id], onDelete: SetNull)
+  purchaseTokens         PurchaseToken[]
+
+  @@unique([provider, externalSubscriptionId])
+  @@index([organizationId, provider, status])
+  @@index([providerCustomerId])
+  @@map("subscriptions")
+}
+
+model PurchaseToken {
+  purchaseToken              String                       @id @map("purchase_token")
+  organizationId             String                       @map("organization_id")
+  subscriptionId             String?                      @map("subscription_id")
+  planId                     String                       @map("plan_id")
+  productId                  String                       @map("product_id")
+  basePlanId                 String?                      @map("base_plan_id")
+  linkedPurchaseToken        String?                      @map("linked_purchase_token")
+  status                     SubscriptionStatus
+  acknowledgmentStatus       PurchaseAcknowledgmentStatus @default(NOT_REQUIRED) @map("acknowledgment_status")
+  acknowledgmentAttemptCount Int                          @default(0) @map("acknowledgment_attempt_count")
+  acknowledgmentLastError    String?                      @map("acknowledgment_last_error")
+  acknowledgmentNextRetryAt  DateTime?                    @map("acknowledgment_next_retry_at")
+  acknowledgedAt             DateTime?                    @map("acknowledged_at")
+  lastVerifiedAt             DateTime                     @default(now()) @map("last_verified_at")
+  createdAt                  DateTime                     @default(now()) @map("created_at")
+  updatedAt                  DateTime                     @updatedAt @map("updated_at")
+  organization               Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan                       Plan                         @relation(fields: [planId], references: [id], onDelete: Restrict)
+  subscription               Subscription?                @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, updatedAt, purchaseToken])
+  @@index([planId])
+  @@index([subscriptionId])
+  @@index([linkedPurchaseToken])
+  @@index([acknowledgmentStatus, acknowledgmentNextRetryAt])
+  @@map("purchase_tokens")
+}
+
+model Entitlement {
+  id                    String            @id @default(cuid())
+  organizationId        String            @unique @map("organization_id")
+  userId                String?           @map("user_id")
+  code                  EntitlementCode
+  status                EntitlementStatus
+  billingOverlap        Boolean           @default(false) @map("billing_overlap")
+  primarySubscriptionId String?           @map("primary_subscription_id")
+  startsAt              DateTime?         @map("starts_at")
+  endsAt                DateTime?         @map("ends_at")
+  sourceProvider        BillingProvider?  @map("source_provider")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
+  organization          Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  primarySubscription   Subscription?     @relation("primary_subscription", fields: [primarySubscriptionId], references: [id], onDelete: SetNull)
+  user                  User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@map("entitlements")
+}
+
+model WebhookEvent {
+  id              String             @id @default(cuid())
+  provider        BillingProvider
+  externalEventId String             @map("external_event_id")
+  payloadJson     Json               @map("payload_json")
+  status          WebhookEventStatus @default(RECEIVED)
+  attemptCount    Int                @default(0) @map("attempt_count")
+  lastError       String?            @map("last_error")
+  nextRetryAt     DateTime?          @map("next_retry_at")
+  lockedAt        DateTime?          @map("locked_at")
+  lockToken       String?            @map("lock_token")
+  receivedAt      DateTime           @default(now()) @map("received_at")
+  processedAt     DateTime?          @map("processed_at")
+
+  @@unique([provider, externalEventId])
+  @@index([status, nextRetryAt, receivedAt])
+  @@index([lockedAt])
+  @@map("webhook_events")
+}
+
+model RealtimeSession {
+  id                  String                @id @default(cuid())
+  organizationId      String                @map("organization_id")
+  userId              String                @map("user_id")
+  deviceId            String?               @map("device_id")
+  featureCode         String                @map("feature_code")
+  provider            String
+  providerSessionRef  String?               @map("provider_session_ref")
+  status              RealtimeSessionStatus @default(OPEN)
+  startedAt           DateTime              @default(now()) @map("started_at")
+  endedAt             DateTime?             @map("ended_at")
+  finalWordCount      Int?                  @map("final_word_count")
+  audioSeconds        Int?                  @map("audio_seconds")
+  requestCount        Int?                  @map("request_count")
+  trustedResultSource String?               @map("trusted_result_source")
+  finalizedAt         DateTime?             @map("finalized_at")
+  createdAt           DateTime              @default(now()) @map("created_at")
+  updatedAt           DateTime              @updatedAt @map("updated_at")
+  device              Device?               @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  organization        Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  usageEvents         UsageEvent[]
+  user                User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, startedAt])
+  @@index([deviceId])
+  @@index([provider, providerSessionRef])
+  @@index([status, startedAt])
+  @@map("realtime_sessions")
+}
+
+model QuotaWindow {
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  userId         String       @map("user_id")
+  featureCode    String       @map("feature_code")
+  windowStart    DateTime     @map("window_start")
+  wordLimit      Int          @map("word_limit")
+  usedWords      Int          @default(0) @map("used_words")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId, featureCode, windowStart])
+  @@index([organizationId, userId, featureCode, updatedAt])
+  @@map("quota_windows")
+}
+
+model UsageEvent {
+  id                String           @id @default(cuid())
+  organizationId    String           @map("organization_id")
+  userId            String           @map("user_id")
+  deviceId          String?          @map("device_id")
+  realtimeSessionId String?          @map("realtime_session_id")
+  idempotencyKey    String?          @map("idempotency_key")
+  featureCode       String           @map("feature_code")
+  provider          String
+  wordCount         Int              @default(0) @map("word_count")
+  audioSeconds      Int              @default(0) @map("audio_seconds")
+  requestCount      Int              @default(0) @map("request_count")
+  status            UsageEventStatus
+  metadataJson      Json?            @map("metadata_json")
+  occurredAt        DateTime         @default(now()) @map("occurred_at")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  device            Device?          @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  realtimeSession   RealtimeSession? @relation(fields: [realtimeSessionId], references: [id], onDelete: SetNull)
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, occurredAt])
+  @@index([realtimeSessionId])
+  @@index([deviceId])
+  @@index([status, occurredAt])
+  @@map("usage_events")
+}
+
+model UsageRollupWeekly {
+  id                String       @id @default(cuid())
+  organizationId    String       @map("organization_id")
+  userId            String       @map("user_id")
+  weekStart         DateTime     @map("week_start")
+  totalWords        Int          @default(0) @map("total_words")
+  totalAudioSeconds Int          @default(0) @map("total_audio_seconds")
+  totalRequests     Int          @default(0) @map("total_requests")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId, weekStart])
+  @@index([organizationId, userId, weekStart])
+  @@map("usage_rollups_weekly")
+}
+
+model SecurityEvent {
+  id             String           @id @default(cuid())
+  organizationId String?          @map("organization_id")
+  userId         String?          @map("user_id")
+  deviceId       String?          @map("device_id")
+  eventType      String           @map("event_type")
+  severity       SecuritySeverity
+  ipHash         String?          @map("ip_hash")
+  metadataJson   Json?            @map("metadata_json")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  device         Device?          @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  organization   Organization?    @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  user           User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+  @@map("security_events")
+}
