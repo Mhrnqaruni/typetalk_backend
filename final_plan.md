@@ -128,7 +128,7 @@ V1 backend must include:
 - personal user workspace
 - device registration
 - session management UI endpoints
-- Stripe billing for web and Windows
+- Paddle billing for web and Windows
 - Google Play billing verification for Android
 - unified entitlements
 - usage tracking
@@ -157,7 +157,7 @@ Public launch blockers:
 - trusted quota enforcement
 - webhook retry-safe processing
 - OTP brute-force protection
-- Stripe billing correctness
+- Paddle billing correctness
 - Google Play verification plus acknowledgment
 - unified entitlements
 
@@ -166,8 +166,9 @@ Public launch blockers:
 These are the assumptions this plan uses:
 
 - Android paid features use Google Play Billing
-- Windows/web payments use Stripe
-- Windows is currently distributed outside a store billing model that would block Stripe
+- Windows/web payments use Paddle
+- Windows is currently distributed outside a store billing model that permits Paddle-hosted checkout and customer self-service flows
+- the current backend already contains historical Stripe-based billing work from completed Phase 3, but the target launch plan now requires a later Paddle migration phase before production launch
 - TypeTalk will copy Typeless structurally:
   - free weekly cap
   - paid Pro plan
@@ -175,7 +176,7 @@ These are the assumptions this plan uses:
   - zero-retention-by-default
   - synced preferences instead of cloud transcript history
 
-If Windows distribution changes later, billing rules may need to change too.
+If Windows distribution changes later, billing rules may need another platform-specific review.
 
 ## 5. High-Level Architecture
 
@@ -186,8 +187,8 @@ Keep v1 simple:
 1. `api`
 - public Fastify backend
 - serves all REST endpoints
-- receives Stripe webhooks
-- receives Google RTDN push notifications
+- receives Google RTDN push notifications now and Paddle webhooks after the later Phase 6 migration
+- may temporarily keep legacy Stripe webhook support until the Paddle migration is complete and cleanup is approved
 - owns realtime session issuance for trusted usage
 - talks to PostgreSQL
 
@@ -427,13 +428,17 @@ Required fields:
 - `billing_interval`
 - `weekly_word_limit`
 - `trial_days`
-- `stripe_price_id`
+- `paddle_price_id`
 - `google_product_id`
 - `google_base_plan_id`
 - `is_active`
 
+Historical/transitional field during Phase 6 migration only:
+- existing `stripe_price_id` may remain temporarily so historical Phase 3 Stripe rows can still be understood and migrated safely, but it is not the target launch pricing reference once Paddle migration is complete
+
 Rules:
 - price and quota policy should come from the database, not from scattered constants in code
+- Phase 6 must make `paddle_price_id` the active web/Windows plan reference for launch behavior
 
 #### `provider_customers`
 
@@ -443,7 +448,7 @@ Purpose:
 Key fields:
 - `id`
 - `organization_id`
-- `provider` (`stripe`, `google_play`)
+- `provider` (`paddle`, `google_play`; allow `stripe` only for historical/transitional rows carried from completed Phase 3 until migration cleanup is approved)
 - `external_customer_id`
 
 #### `subscriptions`
@@ -455,7 +460,7 @@ Key fields:
 - `id`
 - `organization_id`
 - `plan_id`
-- `provider`
+- `provider` (`paddle`, `google_play`; allow `stripe` only for historical/transitional rows carried from completed Phase 3 until migration cleanup is approved)
 - `external_subscription_id`
 - `status`
 - `is_trial`
@@ -521,6 +526,7 @@ Rules:
 - billing entitlements in v1 are resolved primarily by `organization_id`
 - `user_id` is optional support metadata and can be null for organization-wide entitlements
 - if multiple active paid subscriptions exist for the same organization, access stays paid but `billing_overlap` must be set so the product can warn the user
+- `source_provider` should represent `paddle` or `google_play` in the target launch state, with `stripe` allowed only while historical Stripe-backed access is still being migrated or retired during Phase 6
 
 #### `webhook_events`
 
@@ -529,7 +535,7 @@ Purpose:
 
 Key fields:
 - `id`
-- `provider`
+- `provider` (`paddle`, `google_play`; allow `stripe` only for historical/transitional events that still exist during Phase 6 migration)
 - `external_event_id`
 - `payload_json`
 - `status`
@@ -828,20 +834,25 @@ Use these rules exactly:
 
 ## 9. Billing Rules
 
-### Stripe for web and Windows
+### Paddle for web and Windows
 
-Use:
-- Stripe Checkout
-- Stripe Customer Portal
+Current implementation history:
+- the backend already contains completed Stripe-oriented billing routes and webhook handling from Phase 3
+- that Stripe code is historical context, not the target launch provider direction
+- Phase 6 must migrate web/Windows billing to Paddle before production launch
+
+Target launch use:
+- Paddle checkout
+- Paddle customer portal or equivalent self-service flow
 
 Required endpoints:
-- create checkout session
-- create customer portal session
+- create Paddle checkout session
+- create Paddle customer portal or equivalent self-service session
 - get current billing/subscription summary
-- Stripe webhook endpoint
+- Paddle webhook endpoint
 
-Required Stripe webhook handling:
-- verify signature from raw request body
+Required Paddle webhook handling:
+- verify webhook authenticity from the raw request body using the provider's signing model
 - insert webhook row first
 - dedupe using unique event id
 - mark row `received`
@@ -855,7 +866,7 @@ Practical v1 processing model:
 - if processing can finish safely in-request, mark `processed`
 - if processing fails or is deferred, keep the row retryable
 - Railway cron picks up `received` or `failed` rows and retries them
-- subscription cancellation, payment-method changes, and invoice self-service for Stripe are handled through the customer portal route
+- subscription cancellation, payment-method changes, and invoice self-service for Paddle are handled through the Paddle customer portal or equivalent self-service route
 
 ### Google Play for Android
 
@@ -883,7 +894,7 @@ Important rules:
 ### Unified entitlements
 
 The app should never ask:
-- "is this a Stripe user?"
+- "is this a Paddle user?"
 - "is this a Google Play user?"
 
 The app should only ask:
@@ -900,7 +911,7 @@ This policy is required in v1:
 3. If any valid paid source is active, the organization remains paid.
 4. If more than one paid source is active at the same time, set `billing_overlap = true`.
 5. The app should warn the user that duplicate billing exists.
-6. Stripe checkout creation should refuse to start if the organization already has an active paid entitlement.
+6. Paddle checkout creation should refuse to start if the organization already has an active paid entitlement.
 7. Android purchase UI should also check current entitlement before starting a new Play purchase flow.
 8. If overlap still happens, do not auto-refund or auto-cancel; keep records, warn the user, and direct them to the correct provider to manage cancellation.
 
@@ -1058,15 +1069,22 @@ V1 does not need full team UI yet, but the model should exist.
 
 - `GET /v1/billing/plans`
 - `GET /v1/billing/subscription`
-- `POST /v1/billing/stripe/checkout-session`
-- `POST /v1/billing/stripe/customer-portal`
+- `POST /v1/billing/paddle/checkout`
+- `POST /v1/billing/paddle/customer-portal`
 - `POST /v1/billing/google-play/verify-subscription`
 - `POST /v1/billing/google-play/restore`
 - `GET /v1/billing/invoices`
 
+Legacy transitional routes during Phase 6 migration only:
+- `POST /v1/billing/stripe/checkout-session` and `POST /v1/billing/stripe/customer-portal` may remain temporarily until Paddle parity, migration handling, and cleanup are approved
+- those Stripe routes are not the target launch API surface
+
 Provider webhooks:
-- `POST /v1/webhooks/stripe`
+- `POST /v1/webhooks/paddle`
 - `POST /v1/webhooks/google-play/rtdn`
+
+Legacy transitional webhook during Phase 6 migration only:
+- `POST /v1/webhooks/stripe` may remain temporarily while historical Stripe state is still being migrated or retired safely
 
 ### 12.6 Entitlements
 
@@ -1148,7 +1166,7 @@ Do not keep raw IP forever.
 
 - hash refresh tokens
 - hash email challenge codes
-- verify Stripe signatures
+- verify Paddle webhook authenticity, and verify legacy Stripe signatures only while transitional Stripe routes still exist
 - verify Google RTDN trust headers/tokens
 - use idempotency for sensitive write routes
 - use request logging
@@ -1199,10 +1217,11 @@ IP_HASH_KEY_V1=replace_me
 
 GOOGLE_CLIENT_ID=replace_me
 
-STRIPE_SECRET_KEY=replace_me
-STRIPE_WEBHOOK_SECRET=replace_me
-STRIPE_PRICE_ID_PRO_MONTHLY=replace_me
-STRIPE_PRICE_ID_PRO_YEARLY=replace_me
+PADDLE_API_KEY=replace_me
+PADDLE_WEBHOOK_SECRET=replace_me
+PADDLE_PRICE_ID_PRO_MONTHLY=replace_me
+PADDLE_PRICE_ID_PRO_YEARLY=replace_me
+PADDLE_ENV=sandbox
 
 PLAY_PACKAGE_NAME=replace_me
 PLAY_SERVICE_ACCOUNT_JSON=replace_me
@@ -1220,9 +1239,19 @@ MAX_JSON_BODY_BYTES=1048576
 MAX_WEBHOOK_BODY_BYTES=524288
 ```
 
+Legacy transitional variables only while the historical Stripe implementation is still being migrated or retired in Phase 6:
+
+```env
+STRIPE_SECRET_KEY=replace_me
+STRIPE_WEBHOOK_SECRET=replace_me
+STRIPE_PRICE_ID_PRO_MONTHLY=replace_me
+STRIPE_PRICE_ID_PRO_YEARLY=replace_me
+```
+
 Notes:
 - pricing and quota values should live in the `plans` table
 - env vars should not be the main source of truth for plan prices
+- Stripe env vars are legacy transition support only and should be removable after Phase 6 is completed and approved
 
 ### Env files
 
@@ -1285,6 +1314,34 @@ Do not:
 
 This is the deployment path we should follow.
 
+### Operational readiness checks
+
+Before resuming major implementation work or deploy preparation, verify:
+- `git rev-parse --is-inside-work-tree`
+- `git remote -v`
+- `gh auth status`
+- `git ls-remote https://github.com/Mhrnqaruni/typetalk_backend.git`
+- `railway whoami`
+- `railway status`
+
+Current planning-update verification snapshot on 2026-03-27:
+- local `backend/` is a git repository
+- `git remote -v` points `origin` to `https://github.com/Mhrnqaruni/typetalk_backend.git`
+- `gh auth status` currently fails because the stored GitHub token is invalid and must be fixed before backup-dependent execution continues
+- `git ls-remote https://github.com/Mhrnqaruni/typetalk_backend.git` succeeds and the remote `master` branch is reachable
+- `railway whoami` succeeds
+- `railway status` resolves `Project: TypeTalk`, `Environment: production`, and `Service: None`
+
+### GitHub backup discipline
+
+GitHub backup checkpoints are mandatory:
+- immediately after approved planning updates
+- before resuming Phase 5 execution
+- after each approved phase execution milestone
+- before schema migrations that materially change billing or production behavior
+- before Railway deployment changes
+- after successful deploy-ready milestones
+
 ### Step 1: GitHub
 
 Put the repository on GitHub with:
@@ -1292,6 +1349,8 @@ Put the repository on GitHub with:
 - Prisma schema
 - `.env.example`
 - Railway config if needed
+- correct `origin` remote configured
+- successful push access before major implementation continuation
 
 ### Step 2: Railway project
 
@@ -1314,6 +1373,8 @@ The API service must:
 - listen on `0.0.0.0:$PORT`
 - expose `/health`
 - read `DATABASE_URL`
+- be deployed only after the correct Railway service selection is confirmed
+- not be deployed from an untracked or disconnected local directory
 
 ### Step 5: Railway variables
 
@@ -1358,6 +1419,8 @@ These rules must stay in the final implementation:
 - backups are enabled
 - healthcheck is required
 - migrations run before deploy completes
+- the correct Railway service selection is confirmed before deploy work
+- deployment work is driven from a tracked local repository with a working GitHub backup path
 
 Optional after v1:
 - add a short Railway cron job to process pending webhook rows every minute
@@ -1421,7 +1484,7 @@ Definition of done:
 Definition of done:
 - two devices on the same account can read the same preferences
 
-### Phase 3: Stripe billing and entitlements
+### Phase 3: Stripe billing and entitlements (historical completed phase)
 
 1. Add:
    - plans
@@ -1439,6 +1502,7 @@ Definition of done:
 8. Recompute entitlements after billing changes.
 9. Add 30-day Pro trial logic.
 10. Block duplicate paid checkout when active paid entitlement already exists.
+11. Preserve this phase as historical implementation context; do not rewrite it as Paddle retroactively.
 
 Definition of done:
 - Windows/web user can start trial or Pro
@@ -1480,7 +1544,28 @@ Definition of done:
 - free weekly quota is enforced safely
 - usage is visible in the API
 
-### Phase 6: Security and production hardening
+### Phase 6: Paddle billing migration for web and Windows
+
+1. Update the billing provider abstraction so web/Windows billing is Paddle-backed while Android remains Google Play-backed.
+2. Decide and document how historical Stripe routes/data are handled during migration:
+   - legacy transitional support
+   - migrated data
+   - or retirement after Paddle parity is proven
+3. Replace Stripe-centric web/Windows route assumptions with Paddle checkout and Paddle customer self-service routes.
+4. Implement Paddle webhook verification, durable receipt, deduplication, retry-safe processing, and entitlement recomputation.
+5. Update billing tables and seeds so target launch pricing/configuration is Paddle-oriented rather than Stripe price-id oriented.
+6. Replace target launch env/deploy assumptions so Paddle secrets and product identifiers are first-class, and old Stripe vars are clearly marked legacy-only.
+7. Verify Google Play and unified entitlements still work after the Paddle migration.
+8. Verify Railway readiness after the Paddle phase from the tracked GitHub-backed repository.
+
+Definition of done:
+- web/Windows billing target state is Paddle, not Stripe
+- Paddle checkout, self-service, and webhook flows are defined and verified
+- legacy Stripe handling is explicit and safe
+- Google Play still works without regression
+- Railway verification is completed after the Paddle migration
+
+### Phase 7: Security and production hardening
 
 1. Add:
    - ip_observations
@@ -1507,16 +1592,23 @@ Internal auth checkpoint:
 - after Phase 1
 - account creation and refresh flow verified
 
-Internal billing checkpoint:
-- after Phase 4
-- Stripe and Google Play both update entitlements correctly
+Internal usage checkpoint:
+- after Phase 5
+- hard quota enforcement is trusted and safe before any provider migration begins
+
+Internal billing migration checkpoint:
+- after Phase 6
+- Paddle and Google Play both update entitlements correctly
+- legacy Stripe handling is documented and safe
+- Railway verification has been rerun after the Paddle migration
 
 Public launch checkpoint:
-- after Phase 5
-- hard quota enforcement is trusted and safe
+- after Phase 7
 - duplicate webhook retry path exists
 - OTP brute-force protection exists
 - duplicate subscription behavior is handled
+- Paddle billing correctness is verified
+- GitHub backup and Railway deployment readiness are both verified
 
 ## 20. What We Are Deliberately Deferring
 
@@ -1541,7 +1633,7 @@ This backend plan succeeds if TypeTalk can do all of the following:
 - a user signs in on Android or Windows
 - the same user account works across both platforms
 - device and preference sync works
-- Stripe billing works for Windows/web
+- Paddle billing works for Windows/web
 - Google Play verification works for Android
 - entitlements are unified behind one API
 - weekly free-tier quota is enforced safely
@@ -1554,14 +1646,13 @@ This backend plan succeeds if TypeTalk can do all of the following:
 Do these next:
 
 1. Keep this file as the only active backend plan.
-2. Use Node.js + Fastify + Prisma, not Python/Alembic.
-3. Set up local PostgreSQL databases.
-4. Scaffold the backend project in `backend/`.
-5. Create the first Prisma schema and migration.
-6. Implement auth first.
-7. Then implement billing and entitlements.
-8. Then implement usage and quota.
-9. Then connect GitHub to Railway and deploy.
+2. Treat Phase 3 Stripe work as historical completed implementation, not as the target launch provider.
+3. Fix GitHub CLI authentication so backup-dependent execution can continue safely.
+4. Create a GitHub backup checkpoint after this planning update is approved.
+5. Return to Phase 5 execution and finish it cleanly before starting any Paddle work.
+6. Start Phase 6 only after Phase 5 is approved.
+7. Run another GitHub backup checkpoint before Phase 6 and before any material billing-schema or Railway deployment change.
+8. Execute Phase 7 only after Phase 6 is approved.
 
 ## 23. Reference Snapshot
 
@@ -1580,4 +1671,4 @@ This plan is based on the March 2026 product and platform snapshot already revie
 - Android billing:
   - Google Play verification + RTDN
 - Web/Windows billing:
-  - Stripe Checkout + Customer Portal
+  - Paddle checkout + customer portal/self-service

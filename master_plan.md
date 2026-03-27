@@ -10,28 +10,32 @@
 ### Changes After Review Round 1
 
 - Inspector comment: several locked v1 routes were not assigned to any phase, including organization routes, user/session-management routes, `GET /v1/billing/plans`, and `GET /v1/billing/invoices`. Change made: every required route from the locked API list is now assigned to an owning phase, each relevant phase now lists those routes explicitly in its deliverables, and a scope matrix was added to map all required routes and tables to phases.
-- Inspector comment: Phase 1 required suspicious refresh-token reuse to emit a persisted `security_event`, but the previous plan did not create the `security_events` table until Phase 6. Change made: minimum durable `security_events` schema support is now introduced in Phase 1 for auth-related events, and Phase 6 now expands security-event coverage while adding the remaining security/audit tables and hardening work.
+- Inspector comment: Phase 1 required suspicious refresh-token reuse to emit a persisted `security_event`, but the previous plan did not create the `security_events` table until Phase 6. Change made: minimum durable `security_events` schema support is now introduced in Phase 1 for auth-related events, and Phase 7 now expands security-event coverage while adding the remaining security/audit tables and hardening work.
 - Inspector comment: Phase 0 did not preserve the locked plan's mandatory early Railway validation. Change made: Phase 0 now explicitly includes GitHub readiness, Railway project bootstrap, Railway Postgres wiring, deployment of the health skeleton, and Railway-backed `/health` verification as required deliverables and definition-of-done checks.
 - Inspector comment: the previous plan created `idempotency_keys` but did not actually schedule idempotent behavior for device registration, Google verification/restore, or usage finalization. Change made: `idempotency_keys` has been moved forward into Phase 2 so device registration can use it on time, and explicit idempotent handling plus repeat-request verification is now required for device registration, Stripe checkout, Google verify/restore, and usage finalization.
 - Inspector comment: Phase 0 omitted the locked `.env.test` and separate `typetalk_test` database requirements. Change made: Phase 0 now includes `.env.test`, isolated test database setup, test-runner configuration, and verification that tests run against `typetalk_test` rather than `typetalk_dev`.
 
 ### Project Overview
 
-TypeTalk backend is a Node.js 22 + TypeScript + Fastify + Prisma + PostgreSQL control-plane backend for Android and Windows clients, with Railway as the production deployment target. Its locked v1 scope is: email OTP auth, Google sign-in, session management, personal organizations, device registration, synced preferences, Stripe billing for web/Windows, Google Play billing verification for Android, unified entitlements, trusted usage tracking, weekly quota enforcement, webhook durability, and basic admin/security visibility.
+TypeTalk backend is a Node.js 22 + TypeScript + Fastify + Prisma + PostgreSQL control-plane backend for Android and Windows clients, with Railway as the production deployment target. Its locked v1 scope is: email OTP auth, Google sign-in, session management, personal organizations, device registration, synced preferences, Paddle billing for web/Windows, Google Play billing verification for Android, unified entitlements, trusted usage tracking, weekly quota enforcement, webhook durability, and basic admin/security visibility.
 
 The backend must remain privacy-conscious and must not store raw audio, raw transcript text, raw prompt text, or raw app context by default. Public launch readiness depends on exact alignment with the locked final plan: correct auth behavior, correct provider-backed entitlements, trusted usage finalization, retry-safe webhook processing, explicit rate limiting, and Railway deployment validation.
 
-Current starting state:
-- No implementation phases are completed yet.
-- No backend code scaffold exists yet.
-- The workspace currently contains planning and review files plus Government metadata.
-- No dedicated phase implementation folder exists yet.
+Current implementation context:
+- Completed implementation history already includes Phase 3 Stripe billing work and Phase 4 Google Play billing work in the backend codebase.
+- Phase 5 usage/quota work must be finished and approved before any new billing-provider migration begins.
+- The target launch direction is now Paddle for web/Windows and Google Play for Android; Stripe remains historical implementation context and possible transitional legacy data until the Paddle migration phase is complete.
 
 ### Phase Breakdown
 
 Execution rule:
-- Execute phases exactly in this order: Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6.
+- Execute phases exactly in this order: Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5, Phase 6, Phase 7.
 - A later phase cannot start until the previous phase definition of done has been verified.
+
+Operational execution requirements:
+- Before resuming Phase 5 or starting any later phase, verify local repository state with `git rev-parse --is-inside-work-tree`, `git remote -v`, `gh auth status`, `git ls-remote https://github.com/Mhrnqaruni/typetalk_backend.git`, `railway whoami`, and `railway status`.
+- The executor must treat GitHub backup checkpoints as mandatory: immediately after approved planning updates, before resuming Phase 5 execution, after each approved phase execution milestone, before schema migrations that materially change billing or production behavior, before Railway deployment changes, and after successful deploy-ready milestones.
+- Railway deployment work must not proceed from an untracked local directory, and the correct Railway project/environment/service selection must be verified explicitly rather than assumed.
 
 ## Phase 0: Project Foundation
 
@@ -58,7 +62,7 @@ Execution rule:
   3. Create `tsconfig.json` and any TypeScript runtime settings required for a clean developer workflow.
   4. Create the target folder skeleton from the locked backend shape: `prisma/`, `src/`, `src/config/`, `src/plugins/`, `src/modules/`, `src/lib/`, `src/jobs/`, and `test/`.
   5. Implement `src/app.ts` as the Fastify app factory and `src/server.ts` as the process entrypoint so app construction and process startup remain separable for testing.
-  6. Implement environment loading and validation, including the required variables from the locked plan for database access, JWT settings, OTP settings, allowed origins, body limits, Stripe, Google Play, email delivery, and encryption keys.
+  6. Implement environment loading and validation, including the required variables from the locked plan for database access, JWT settings, OTP settings, allowed origins, body limits, Paddle, Google Play, email delivery, encryption keys, and any clearly-marked legacy Stripe values that must survive only until the later Paddle migration is complete.
   7. Add `.env.example` with every required variable from the locked plan.
   8. Add `.env.test` and configure the test runner so tests use `typetalk_test` and never point at `typetalk_dev`.
   9. Initialize Prisma, add the starting schema file and Prisma client wiring, and confirm the same Prisma setup can serve both local PostgreSQL and Railway PostgreSQL.
@@ -137,9 +141,10 @@ Execution rule:
   - Device registration is idempotent: repeating the same request with the same idempotency key does not create duplicate device state.
   - Device limits and ownership checks are enforced as required by the locked plan.
 
-## Phase 3: Stripe Billing and Entitlements
+## Phase 3: Stripe Billing and Entitlements (Historical Completed Phase)
 
-- Objective: implement web/Windows billing through Stripe, store durable billing state, expose the initial unified entitlement result, and cover the remaining billing routes required before Google Play integration.
+- Objective: document and preserve the already-completed Stripe-based web/Windows billing implementation history, which established the first durable billing state, unified entitlement result, and webhook retry path before Google Play integration.
+- Historical note: this phase remains in the plan because the current backend already contains Stripe-backed routes, tables, and webhook handling. It must not be rewritten as Paddle. The target launch migration to Paddle is handled later in Phase 6.
 - Key deliverables:
   - Prisma schema and migration for `plans`, `provider_customers`, `subscriptions`, `entitlements`, and `webhook_events`
   - seed data for `free`, `pro_monthly`, and `pro_yearly`
@@ -208,7 +213,31 @@ Execution rule:
   - `POST /v1/usage/finalize` rejects untrusted client-declared billable truth and only spends quota when a trusted server-owned session result exists.
   - `POST /v1/usage/events` remains telemetry-only and cannot affect billable quota.
 
-## Phase 6: Security and Production Hardening
+## Phase 6: Paddle Billing Migration for Web/Windows
+
+- Objective: migrate the target launch billing provider for web/Windows from historical Stripe implementation to Paddle while preserving Google Play for Android, keeping unified entitlements correct, and making the Railway deployment and environment model match the new provider direction.
+- Key deliverables:
+  - provider-abstraction updates so web/Windows billing flows are Paddle-backed while Android remains Google Play-backed
+  - documented legacy-Stripe transition policy that clearly states whether existing Stripe routes/data remain read-only transitional support, are migrated, or are retired after Paddle parity is proven
+  - schema and migration updates across `plans`, `provider_customers`, `subscriptions`, `entitlements`, and `webhook_events`, plus any minimal transitional billing metadata needed to preserve historical Stripe records safely during the migration
+  - plan-catalog and seed updates so launch pricing/product identifiers rely on Paddle product or price identifiers instead of Stripe price IDs
+  - `POST /v1/billing/paddle/checkout`
+  - `POST /v1/billing/paddle/customer-portal`
+  - `POST /v1/webhooks/paddle`
+  - migration of web/Windows billing behavior inside `GET /v1/billing/subscription`, `GET /v1/billing/invoices`, and `GET /v1/entitlements/current` so Paddle becomes the target provider-backed source of truth
+  - Paddle webhook verification, durable receipt, insert-first processing, duplicate-event deduplication, retry-safe state machine handling, retry-executor integration, entitlement recomputation, and failure-injection verification
+  - replacement of Stripe-centric deployment/env expectations with Paddle secrets and identifiers, with explicit treatment of which old Stripe variables remain only as legacy transitional configuration
+- Dependencies: Phase 5 completed and verified first; GitHub backup checkpoint created before migration work starts; repo/GitHub/Railway operational checks pass; Google Play entitlement behavior must still be green before and after the migration
+- Estimated complexity: High
+- Definition of done:
+  - Every Paddle route listed above exists, validates input, and has automated tests or explicit endpoint verification.
+  - Paddle webhook handling verifies authenticity, stores events durably before processing, preserves retryability, and recomputes entitlements correctly.
+  - The shared retry executor safely processes Paddle-backed `webhook_events` and does not regress Google RTDN retry behavior.
+  - The plan catalog, provider abstractions, and env configuration all describe Paddle as the active web/Windows provider instead of Stripe.
+  - Legacy Stripe handling is explicitly documented and implemented so the codebase distinguishes historical Stripe state from the target launch provider.
+  - Railway verification is completed after the Paddle phase, including correct project/environment/service selection and deploy-ready validation from the tracked local repository.
+
+## Phase 7: Security and Production Hardening
 
 - Objective: add the remaining abuse controls, auditability, admin visibility, and operational hardening required before production launch.
 - Key deliverables:
@@ -220,15 +249,15 @@ Execution rule:
   - auth rate limiting
   - short-retention raw-IP handling with long-term HMAC-based correlation
   - stronger request logging, error-tracking integration points, and retention/privacy review across implemented modules
-- Dependencies: Phases 0 through 5 completed and verified
+- Dependencies: Phases 0 through 6 completed and verified
 - Estimated complexity: Medium
 - Definition of done:
-  - Every Phase 6 route listed above exists, validates input, and has either automated tests or explicit endpoint verification.
-  - Collection endpoints in Phase 6, especially `GET /v1/admin/subscriptions` and collection-style `GET /v1/admin/usage`, implement the shared cursor pagination contract with `limit`, `cursor`, `items`, and `next_cursor`.
+  - Every Phase 7 route listed above exists, validates input, and has either automated tests or explicit endpoint verification.
+  - Collection endpoints in Phase 7, especially `GET /v1/admin/subscriptions` and collection-style `GET /v1/admin/usage`, implement the shared cursor pagination contract with `limit`, `cursor`, `items`, and `next_cursor`.
   - Auth rate limits are active and produce durable security logging.
   - Raw IP retention is time-bounded and long-term correlation uses hashed values only.
   - Admin read-only endpoints can inspect users, subscriptions, and usage without introducing support impersonation or other deferred scope.
-  - The full implemented system satisfies the locked public-launch blockers: trusted quota enforcement, retry-safe webhook handling, OTP brute-force protection, Stripe billing correctness, Google Play verification plus acknowledgment, and unified entitlements.
+  - The full implemented system satisfies the locked public-launch blockers: trusted quota enforcement, retry-safe webhook handling, OTP brute-force protection, Paddle billing correctness, Google Play verification plus acknowledgment, and unified entitlements.
 
 ### Scope Matrix
 
@@ -239,7 +268,8 @@ Route ownership:
 - Phase 3: `GET /v1/billing/plans`, `GET /v1/billing/subscription`, `POST /v1/billing/stripe/checkout-session`, `POST /v1/billing/stripe/customer-portal`, `GET /v1/billing/invoices`, `POST /v1/webhooks/stripe`, `GET /v1/entitlements/current`
 - Phase 4: `POST /v1/billing/google-play/verify-subscription`, `POST /v1/billing/google-play/restore`, `POST /v1/webhooks/google-play/rtdn`, plus Google Play support added into `GET /v1/billing/subscription`, `GET /v1/billing/invoices`, and `GET /v1/entitlements/current`
 - Phase 5: `POST /v1/realtime/session`, `POST /v1/usage/finalize`, `POST /v1/usage/events`, `GET /v1/usage/summary`, `GET /v1/usage/quota`
-- Phase 6: `GET /v1/admin/users/:userId`, `GET /v1/admin/subscriptions`, `GET /v1/admin/usage`
+- Phase 6: `POST /v1/billing/paddle/checkout`, `POST /v1/billing/paddle/customer-portal`, `POST /v1/webhooks/paddle`, plus Paddle-backed migration of web/Windows behavior inside `GET /v1/billing/subscription`, `GET /v1/billing/invoices`, and `GET /v1/entitlements/current`, with explicit legacy handling for existing Stripe routes
+- Phase 7: `GET /v1/admin/users/:userId`, `GET /v1/admin/subscriptions`, `GET /v1/admin/usage`
 
 Table ownership:
 - Phase 1: `users`, `auth_identities`, `email_challenges`, `sessions`, `organizations`, `organization_members`, `devices`, minimum `security_events`
@@ -247,11 +277,13 @@ Table ownership:
 - Phase 3: `plans`, `provider_customers`, `subscriptions`, `entitlements`, `webhook_events`
 - Phase 4: `purchase_tokens`
 - Phase 5: `realtime_sessions`, `quota_windows`, `usage_events`, `usage_rollups_weekly`
-- Phase 6: `ip_observations`, `audit_logs`, and expanded application-wide `security_events` coverage
+- Phase 6: Paddle migration updates to `plans`, `provider_customers`, `subscriptions`, `entitlements`, and `webhook_events`, plus any minimal transitional billing metadata required to preserve historical Stripe records safely
+- Phase 7: `ip_observations`, `audit_logs`, and expanded application-wide `security_events` coverage
 
 Cross-cutting infrastructure ownership:
 - Phase 0: shared cursor pagination contract and helper
 - Phase 3: Railway cron job or equivalent retry executor for Stripe-backed `webhook_events`
 - Phase 4: retry executor extended to Google Play RTDN-backed `webhook_events`
+- Phase 6: retry executor extended again to Paddle-backed `webhook_events`, while keeping any remaining legacy Stripe retry path safe until migration cleanup is complete
 
-### Total Phases: 7
+### Total Phases: 8
