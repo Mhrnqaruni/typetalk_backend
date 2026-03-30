@@ -1,12 +1,16 @@
+import type { Writable } from "node:stream";
+
 import type { PrismaClient } from "@prisma/client";
 
 import { buildApp } from "../../src/app";
 import { getConfig } from "../../src/config/env";
 import { AppError } from "../../src/lib/app-error";
+import type { ErrorTracker } from "../../src/lib/error-tracking";
 import { createPrismaClient } from "../../src/lib/prisma";
 import type { EmailProvider, SendOtpInput } from "../../src/lib/email-provider";
 import type { GoogleIdentityProfile, GoogleVerifier } from "../../src/modules/auth/google";
-import { AuthRateLimiter } from "../../src/modules/auth/rate-limiter";
+import { AuthRateLimiter, createAuthRateLimiter } from "../../src/modules/auth/rate-limiter";
+import { AuthRepository } from "../../src/modules/auth/repository";
 import { parseGooglePlayRtdnPayload } from "../../src/modules/billing/google-play";
 import { BillingRepository } from "../../src/modules/billing/repository";
 import type {
@@ -14,6 +18,15 @@ import type {
   GooglePlayProvider,
   GooglePlayRtdnEvent,
   GooglePlaySubscriptionState,
+  PaddleCheckoutSessionInput,
+  PaddleCheckoutSessionResult,
+  PaddleCustomerInput,
+  PaddleCustomerPortalInput,
+  PaddleCustomerPortalResult,
+  PaddleInvoiceListInput,
+  PaddleInvoiceListResult,
+  PaddleProvider,
+  PaddleWebhookEvent,
   StripeCheckoutSessionInput,
   StripeCheckoutSessionResult,
   StripeCustomerInput,
@@ -27,6 +40,8 @@ import type {
 import { DeviceRepository } from "../../src/modules/devices/repository";
 import { EntitlementRepository } from "../../src/modules/entitlements/repository";
 import { EntitlementService } from "../../src/modules/entitlements/service";
+import { SecurityRepository } from "../../src/modules/security/repository";
+import { SecurityService } from "../../src/modules/security/service";
 import { UsageRepository } from "../../src/modules/usage/repository";
 import { UsageService } from "../../src/modules/usage/service";
 
@@ -144,6 +159,88 @@ export class StubStripeProvider implements StripeProvider {
   }
 }
 
+export class StubPaddleProvider implements PaddleProvider {
+  readonly createdCustomers: PaddleCustomerInput[] = [];
+  readonly checkoutSessions: PaddleCheckoutSessionInput[] = [];
+  readonly portalSessions: PaddleCustomerPortalInput[] = [];
+  readonly invoicePages = new Map<string, PaddleInvoiceListResult>();
+  readonly webhookEvents = new Map<string, PaddleWebhookEvent>();
+
+  async createCustomer(input: PaddleCustomerInput): Promise<{ id: string }> {
+    this.createdCustomers.push(input);
+
+    return {
+      id: `ctm_${this.createdCustomers.length}`
+    };
+  }
+
+  async createCheckoutSession(input: PaddleCheckoutSessionInput): Promise<PaddleCheckoutSessionResult> {
+    this.checkoutSessions.push(input);
+
+    return {
+      id: `txn_${this.checkoutSessions.length}`,
+      customerId: input.customerId,
+      url: `https://paddle.test/checkout/${this.checkoutSessions.length}`,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000)
+    };
+  }
+
+  async createCustomerPortalSession(
+    input: PaddleCustomerPortalInput
+  ): Promise<PaddleCustomerPortalResult> {
+    this.portalSessions.push(input);
+
+    return {
+      id: `cps_${this.portalSessions.length}`,
+      url: `https://paddle.test/portal/${this.portalSessions.length}`
+    };
+  }
+
+  async listInvoices(input: PaddleInvoiceListInput): Promise<PaddleInvoiceListResult> {
+    return this.invoicePages.get(this.buildInvoicePageKey(input)) ?? {
+      items: [],
+      nextCursor: null
+    };
+  }
+
+  async verifyWebhookEvent(rawBody: Buffer, signatureHeader: string): Promise<PaddleWebhookEvent> {
+    const eventId = signatureHeader.split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith("h1="))
+      ?.slice(3)
+      ?? signatureHeader.trim();
+    const event = this.webhookEvents.get(eventId);
+
+    if (!event) {
+      throw new AppError(400, "invalid_webhook_signature", "Webhook signature is invalid.");
+    }
+
+    const parsedEventId = JSON.parse(rawBody.toString("utf8"))?.event_id;
+
+    if (parsedEventId !== eventId) {
+      throw new AppError(400, "invalid_webhook_signature", "Webhook signature is invalid.");
+    }
+
+    return event;
+  }
+
+  setInvoicePage(input: PaddleInvoiceListInput, result: PaddleInvoiceListResult): void {
+    this.invoicePages.set(this.buildInvoicePageKey(input), result);
+  }
+
+  setWebhookEvent(event: PaddleWebhookEvent): void {
+    this.webhookEvents.set(event.id, event);
+  }
+
+  private buildInvoicePageKey(input: PaddleInvoiceListInput): string {
+    return JSON.stringify({
+      customerId: input.customerId,
+      limit: input.limit,
+      startingAfter: input.startingAfter ?? null
+    });
+  }
+}
+
 export class StubGooglePlayProvider implements GooglePlayProvider {
   readonly subscriptionStates = new Map<string, GooglePlaySubscriptionState>();
   readonly acknowledgedSubscriptions: GooglePlayAcknowledgeInput[] = [];
@@ -192,14 +289,18 @@ export class StubGooglePlayProvider implements GooglePlayProvider {
 export async function createTestHarness(options?: {
   requestCodeMaxPerIp?: number;
   verifyCodeMaxPerIp?: number;
+  paddleProvider?: StubPaddleProvider;
   stripeProvider?: StubStripeProvider;
   googlePlayProvider?: StubGooglePlayProvider;
+  errorTracker?: ErrorTracker;
+  loggerStream?: Writable;
 }): Promise<{
   prisma: PrismaClient;
   app: Awaited<ReturnType<typeof buildApp>>;
   emailProvider: MemoryEmailProvider;
   googleVerifier: StubGoogleVerifier;
   authRateLimiter: AuthRateLimiter;
+  paddleProvider: StubPaddleProvider;
   stripeProvider: StubStripeProvider;
   googlePlayProvider: StubGooglePlayProvider;
   usageService: UsageService;
@@ -208,13 +309,21 @@ export async function createTestHarness(options?: {
   const prisma = createPrismaClient(config.databaseUrl);
   const emailProvider = new MemoryEmailProvider();
   const googleVerifier = new StubGoogleVerifier();
+  const paddleProvider = options?.paddleProvider ?? new StubPaddleProvider();
   const stripeProvider = options?.stripeProvider ?? new StubStripeProvider();
   const googlePlayProvider = options?.googlePlayProvider ?? new StubGooglePlayProvider();
-  const authRateLimiter = new AuthRateLimiter({
-    windowMs: config.authRateLimitWindowSeconds * 1000,
-    requestCodeMaxPerIp: options?.requestCodeMaxPerIp ?? config.authRequestCodeMaxPerIp,
-    verifyCodeMaxPerIp: options?.verifyCodeMaxPerIp ?? config.authVerifyCodeMaxPerIp
-  });
+  const authRepository = new AuthRepository(prisma);
+  const securityRepository = new SecurityRepository(prisma);
+  const securityService = new SecurityService(securityRepository);
+  const authRateLimiter = createAuthRateLimiter(
+    {
+      ...config,
+      authRequestCodeMaxPerIp: options?.requestCodeMaxPerIp ?? config.authRequestCodeMaxPerIp,
+      authVerifyCodeMaxPerIp: options?.verifyCodeMaxPerIp ?? config.authVerifyCodeMaxPerIp
+    },
+    authRepository,
+    securityService
+  );
   const billingRepository = new BillingRepository(prisma);
   const entitlementRepository = new EntitlementRepository(prisma);
   const entitlementService = new EntitlementService(billingRepository, entitlementRepository);
@@ -232,8 +341,11 @@ export async function createTestHarness(options?: {
     emailProvider,
     googleVerifier,
     authRateLimiter,
+    paddleProvider,
     stripeProvider,
-    googlePlayProvider
+    googlePlayProvider,
+    errorTracker: options?.errorTracker,
+    loggerStream: options?.loggerStream
   });
 
   return {
@@ -242,6 +354,7 @@ export async function createTestHarness(options?: {
     emailProvider,
     googleVerifier,
     authRateLimiter,
+    paddleProvider,
     stripeProvider,
     googlePlayProvider,
     usageService

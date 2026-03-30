@@ -1,76 +1,86 @@
 import { type AppConfig } from "../../config/env";
 import { AppError } from "../../lib/app-error";
+import { hashIpAddress } from "../../lib/crypto";
+import type { RequestMetadata } from "../../lib/request-metadata";
+import { SecurityService } from "../security/service";
+import { AuthRepository } from "./repository";
 
 interface AuthRateLimiterOptions {
   windowMs: number;
   requestCodeMaxPerIp: number;
   verifyCodeMaxPerIp: number;
-}
-
-interface RateLimitBucket {
-  count: number;
-  resetAt: number;
+  ipHashKey: string;
+  repository: AuthRepository;
+  securityService: SecurityService;
 }
 
 export class AuthRateLimiter {
-  private readonly buckets = new Map<string, RateLimitBucket>();
+  constructor(private readonly options: AuthRateLimiterOptions) {}
 
-  constructor(
-    private readonly options: AuthRateLimiterOptions,
-    private readonly now: () => number = () => Date.now()
-  ) {}
-
-  assertCanRequestCode(ipAddress?: string | null): void {
-    this.consume("auth_email_request", ipAddress, this.options.requestCodeMaxPerIp);
+  async assertCanRequestCode(
+    metadata: Pick<RequestMetadata, "ipAddress" | "ipCountryCode">
+  ): Promise<void> {
+    await this.consume("auth_email_request", metadata, this.options.requestCodeMaxPerIp);
   }
 
-  assertCanVerifyCode(ipAddress?: string | null): void {
-    this.consume("auth_email_verify", ipAddress, this.options.verifyCodeMaxPerIp);
+  async assertCanVerifyCode(
+    metadata: Pick<RequestMetadata, "ipAddress" | "ipCountryCode">
+  ): Promise<void> {
+    await this.consume("auth_email_verify", metadata, this.options.verifyCodeMaxPerIp);
   }
 
-  reset(): void {
-    this.buckets.clear();
+  async reset(): Promise<void> {
+    await this.options.repository.resetAuthRateLimitBuckets();
   }
 
-  private consume(scope: string, ipAddress: string | null | undefined, limit: number): void {
-    if (!ipAddress) {
+  private async consume(
+    scope: "auth_email_request" | "auth_email_verify",
+    metadata: Pick<RequestMetadata, "ipAddress" | "ipCountryCode">,
+    limit: number
+  ): Promise<void> {
+    if (!metadata.ipAddress) {
       return;
     }
 
-    const now = this.now();
-    const key = `${scope}:${ipAddress}`;
-    const existingBucket = this.buckets.get(key);
+    const now = new Date();
+    const windowStart = new Date(
+      Math.floor(now.getTime() / this.options.windowMs) * this.options.windowMs
+    );
+    const ipHash = hashIpAddress(metadata.ipAddress, this.options.ipHashKey);
+    const bucket = await this.options.repository.incrementAuthRateLimitBucket({
+      scope,
+      ipHash,
+      windowStart
+    });
 
-    if (!existingBucket || existingBucket.resetAt <= now) {
-      this.buckets.set(key, {
-        count: 1,
-        resetAt: now + this.options.windowMs
-      });
-      this.pruneExpired(now);
-      return;
-    }
-
-    if (existingBucket.count >= limit) {
-      throw new AppError(429, "rate_limited", "Too many auth requests from this IP. Try again later.");
-    }
-
-    existingBucket.count += 1;
-    this.buckets.set(key, existingBucket);
-  }
-
-  private pruneExpired(now: number): void {
-    for (const [key, bucket] of this.buckets.entries()) {
-      if (bucket.resetAt <= now) {
-        this.buckets.delete(key);
+    if (bucket.hitCount > limit) {
+      if (bucket.hitCount === limit + 1) {
+        await this.options.securityService.recordAuthRateLimitHit({
+          scope,
+          ipAddress: metadata.ipAddress,
+          countryCode: metadata.ipCountryCode,
+          limit,
+          hitCount: bucket.hitCount,
+          windowStart
+        });
       }
+
+      throw new AppError(429, "rate_limited", "Too many auth requests from this IP. Try again later.");
     }
   }
 }
 
-export function createAuthRateLimiter(config: AppConfig): AuthRateLimiter {
+export function createAuthRateLimiter(
+  config: AppConfig,
+  repository: AuthRepository,
+  securityService: SecurityService
+): AuthRateLimiter {
   return new AuthRateLimiter({
     windowMs: config.authRateLimitWindowSeconds * 1000,
     requestCodeMaxPerIp: config.authRequestCodeMaxPerIp,
-    verifyCodeMaxPerIp: config.authVerifyCodeMaxPerIp
+    verifyCodeMaxPerIp: config.authVerifyCodeMaxPerIp,
+    ipHashKey: config.ipHashKeyV1,
+    repository,
+    securityService
   });
 }

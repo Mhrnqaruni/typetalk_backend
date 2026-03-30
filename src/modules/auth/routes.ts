@@ -1,5 +1,6 @@
-import type { FastifyPluginAsync, FastifyRequest } from "fastify";
+import type { FastifyPluginAsync } from "fastify";
 
+import { getRequestMetadata } from "../../lib/request-metadata";
 import { mapDevicePayload } from "../devices/schemas";
 import { requireAuthContext } from "../../plugins/auth";
 import { type AuthRateLimiter } from "./rate-limiter";
@@ -17,16 +18,6 @@ interface AuthRoutesDependencies {
   authRateLimiter: AuthRateLimiter;
 }
 
-function getRequestMetadata(request: FastifyRequest) {
-  const ipCountryCode = request.headers["x-country-code"] ?? request.headers["cf-ipcountry"];
-
-  return {
-    userAgent: typeof request.headers["user-agent"] === "string" ? request.headers["user-agent"] : null,
-    ipAddress: request.ip,
-    ipCountryCode: typeof ipCountryCode === "string" ? ipCountryCode : null
-  };
-}
-
 export function buildAuthRoutes({
   authService,
   authRateLimiter
@@ -34,7 +25,7 @@ export function buildAuthRoutes({
   return async (app) => {
     app.post("/email/request-code", {
       preHandler: async (request) => {
-        authRateLimiter.assertCanRequestCode(request.ip);
+        await authRateLimiter.assertCanRequestCode(getRequestMetadata(request));
       }
     }, async (request, reply) => {
       const body = requestEmailCodeSchema.parse(request.body);
@@ -47,7 +38,7 @@ export function buildAuthRoutes({
 
     app.post("/email/resend-code", {
       preHandler: async (request) => {
-        authRateLimiter.assertCanRequestCode(request.ip);
+        await authRateLimiter.assertCanRequestCode(getRequestMetadata(request));
       }
     }, async (request, reply) => {
       const body = requestEmailCodeSchema.parse(request.body);
@@ -60,7 +51,7 @@ export function buildAuthRoutes({
 
     app.post("/email/verify-code", {
       preHandler: async (request) => {
-        authRateLimiter.assertCanVerifyCode(request.ip);
+        await authRateLimiter.assertCanVerifyCode(getRequestMetadata(request));
       }
     }, async (request, reply) => {
       const body = verifyEmailCodeSchema.parse(request.body);

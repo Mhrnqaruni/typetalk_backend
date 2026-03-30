@@ -13,7 +13,7 @@ describe("google auth flows", () => {
   beforeEach(async () => {
     await resetDatabase(harness.prisma);
     harness.emailProvider.sentOtps.length = 0;
-    harness.authRateLimiter.reset();
+    await harness.authRateLimiter.reset();
   });
 
   afterAll(async () => {

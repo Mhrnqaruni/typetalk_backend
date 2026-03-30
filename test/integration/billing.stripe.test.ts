@@ -16,7 +16,12 @@ describe("stripe billing routes", () => {
     await resetDatabase(harness.prisma);
     await seedPlans(harness.prisma);
     harness.emailProvider.sentOtps.length = 0;
-    harness.authRateLimiter.reset();
+    await harness.authRateLimiter.reset();
+    harness.paddleProvider.createdCustomers.length = 0;
+    harness.paddleProvider.checkoutSessions.length = 0;
+    harness.paddleProvider.portalSessions.length = 0;
+    harness.paddleProvider.invoicePages.clear();
+    harness.paddleProvider.webhookEvents.clear();
     harness.stripeProvider.createdCustomers.length = 0;
     harness.stripeProvider.checkoutSessions.length = 0;
     harness.stripeProvider.portalSessions.length = 0;
@@ -60,6 +65,26 @@ describe("stripe billing routes", () => {
       "free",
       "pro_monthly",
       "pro_yearly"
+    ]);
+    expect(initialResponse.json().items[1]).toEqual({
+      code: "pro_monthly",
+      display_name: "Pro Monthly",
+      amount_cents: 999,
+      currency: "usd",
+      billing_interval: "monthly",
+      weekly_word_limit: 1_000_000,
+      trial_days: 30,
+      is_active: true
+    });
+    expect(Object.keys(initialResponse.json().items[1]).sort()).toEqual([
+      "amount_cents",
+      "billing_interval",
+      "code",
+      "currency",
+      "display_name",
+      "is_active",
+      "trial_days",
+      "weekly_word_limit"
     ]);
 
     await harness.prisma.plan.update({
@@ -400,10 +425,10 @@ describe("stripe billing routes", () => {
     });
   });
 
-  it("creates checkout sessions idempotently, preserves the 30-day trial, and blocks duplicate paid checkout", async () => {
+  it("retires the legacy Stripe checkout write path for launch traffic", async () => {
     const session = await signIn("billing-checkout@example.com");
 
-    const missingKeyResponse = await harness.app.inject({
+    const firstResponse = await harness.app.inject({
       method: "POST",
       url: "/v1/billing/stripe/checkout-session",
       headers: {
@@ -416,108 +441,10 @@ describe("stripe billing routes", () => {
       }
     });
 
-    expect(missingKeyResponse.statusCode).toBe(400);
-    expect(missingKeyResponse.json().error.code).toBe("missing_idempotency_key");
-
-    const firstResponse = await harness.app.inject({
-      method: "POST",
-      url: "/v1/billing/stripe/checkout-session",
-      headers: {
-        authorization: `Bearer ${session.access_token}`,
-        "idempotency-key": "checkout-key-1"
-      },
-      payload: {
-        plan_code: "pro_monthly",
-        success_url: "https://app.typetalk.test/success",
-        cancel_url: "https://app.typetalk.test/cancel"
-      }
-    });
-
-    expect(firstResponse.statusCode).toBe(200);
-    expect(firstResponse.json().checkout_session.trial_days).toBe(30);
-    expect(harness.stripeProvider.createdCustomers).toHaveLength(1);
-    expect(harness.stripeProvider.checkoutSessions).toHaveLength(1);
-
-    const replayResponse = await harness.app.inject({
-      method: "POST",
-      url: "/v1/billing/stripe/checkout-session",
-      headers: {
-        authorization: `Bearer ${session.access_token}`,
-        "idempotency-key": "checkout-key-1"
-      },
-      payload: {
-        plan_code: "pro_monthly",
-        success_url: "https://app.typetalk.test/success",
-        cancel_url: "https://app.typetalk.test/cancel"
-      }
-    });
-
-    expect(replayResponse.statusCode).toBe(200);
-    expect(replayResponse.json()).toEqual(firstResponse.json());
-    expect(harness.stripeProvider.checkoutSessions).toHaveLength(1);
-
-    const conflictResponse = await harness.app.inject({
-      method: "POST",
-      url: "/v1/billing/stripe/checkout-session",
-      headers: {
-        authorization: `Bearer ${session.access_token}`,
-        "idempotency-key": "checkout-key-1"
-      },
-      payload: {
-        plan_code: "pro_yearly",
-        success_url: "https://app.typetalk.test/success",
-        cancel_url: "https://app.typetalk.test/cancel"
-      }
-    });
-
-    expect(conflictResponse.statusCode).toBe(409);
-    expect(conflictResponse.json().error.code).toBe("idempotency_key_conflict");
-
-    const monthlyPlan = await harness.prisma.plan.findUniqueOrThrow({
-      where: {
-        code: "pro_monthly"
-      }
-    });
-    const providerCustomer = await harness.prisma.providerCustomer.findUniqueOrThrow({
-      where: {
-        organizationId_provider: {
-          organizationId: session.organization_id,
-          provider: "STRIPE"
-        }
-      }
-    });
-
-    await harness.prisma.subscription.create({
-      data: {
-        organizationId: session.organization_id,
-        planId: monthlyPlan.id,
-        providerCustomerId: providerCustomer.id,
-        provider: "STRIPE",
-        externalSubscriptionId: "sub_active_existing",
-        status: "ACTIVE",
-        isTrial: false,
-        conflictFlag: false,
-        currentPeriodStart: new Date("2026-03-01T00:00:00.000Z"),
-        currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z")
-      }
-    });
-
-    const duplicatePaidResponse = await harness.app.inject({
-      method: "POST",
-      url: "/v1/billing/stripe/checkout-session",
-      headers: {
-        authorization: `Bearer ${session.access_token}`,
-        "idempotency-key": "checkout-key-2"
-      },
-      payload: {
-        plan_code: "pro_monthly",
-        success_url: "https://app.typetalk.test/success",
-        cancel_url: "https://app.typetalk.test/cancel"
-      }
-    });
-
-    expect(duplicatePaidResponse.statusCode).toBe(409);
-    expect(duplicatePaidResponse.json().error.code).toBe("active_paid_entitlement_exists");
+    expect(firstResponse.statusCode).toBe(410);
+    expect(firstResponse.json().error.code).toBe("legacy_billing_route_retired");
+    expect(harness.stripeProvider.createdCustomers).toHaveLength(0);
+    expect(harness.stripeProvider.checkoutSessions).toHaveLength(0);
   });
 
   it("creates portal sessions and paginates invoices for the current organization", async () => {

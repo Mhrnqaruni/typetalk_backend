@@ -6,7 +6,11 @@ export const checkoutSessionCreateSchema = z.object({
   cancel_url: z.string().url()
 });
 
-export const customerPortalCreateSchema = z.object({
+export const paddleCustomerPortalCreateSchema = z.object({
+  return_url: z.string().url().optional()
+});
+
+export const stripeCustomerPortalCreateSchema = z.object({
   return_url: z.string().url()
 });
 
@@ -22,6 +26,7 @@ export const billingInvoicesQuerySchema = z.object({
 });
 
 export type CheckoutSessionCreateBody = z.infer<typeof checkoutSessionCreateSchema>;
-export type CustomerPortalCreateBody = z.infer<typeof customerPortalCreateSchema>;
+export type PaddleCustomerPortalCreateBody = z.infer<typeof paddleCustomerPortalCreateSchema>;
+export type StripeCustomerPortalCreateBody = z.infer<typeof stripeCustomerPortalCreateSchema>;
 export type GooglePlaySubscriptionActionBody = z.infer<typeof googlePlaySubscriptionActionSchema>;
 export type BillingInvoicesQuery = z.infer<typeof billingInvoicesQuerySchema>;

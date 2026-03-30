@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { seedPlans } from "../../prisma/seed";
+import { getUtcWeekWindow } from "../../src/modules/usage/window";
 import { createTestHarness } from "../helpers/app";
 import { resetDatabase } from "../helpers/db";
 
@@ -15,7 +16,12 @@ describe("usage routes", () => {
     await resetDatabase(harness.prisma);
     await seedPlans(harness.prisma);
     harness.emailProvider.sentOtps.length = 0;
-    harness.authRateLimiter.reset();
+    await harness.authRateLimiter.reset();
+    harness.paddleProvider.createdCustomers.length = 0;
+    harness.paddleProvider.checkoutSessions.length = 0;
+    harness.paddleProvider.portalSessions.length = 0;
+    harness.paddleProvider.invoicePages.clear();
+    harness.paddleProvider.webhookEvents.clear();
     harness.stripeProvider.createdCustomers.length = 0;
     harness.stripeProvider.checkoutSessions.length = 0;
     harness.stripeProvider.portalSessions.length = 0;
@@ -30,6 +36,10 @@ describe("usage routes", () => {
   afterAll(async () => {
     await harness.app.close();
     await harness.prisma.$disconnect();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   async function signIn(email: string) {
@@ -124,7 +134,7 @@ describe("usage routes", () => {
       realtimeSessionId,
       provider: overrides?.provider ?? "openai_realtime",
       status: overrides?.status ?? "COMPLETED",
-      endedAt: overrides?.endedAt ?? new Date("2026-03-26T10:00:00.000Z"),
+      endedAt: overrides?.endedAt ?? await getValidEndedAt(realtimeSessionId),
       trustedResultSource: overrides?.trustedResultSource ?? "provider_callback",
       ...(
         overrides && "providerSessionRef" in overrides
@@ -146,6 +156,33 @@ describe("usage routes", () => {
           ? { requestCount: overrides.requestCount }
           : { requestCount: 1 }
       )
+    });
+  }
+
+  async function getStoredRealtimeSession(realtimeSessionId: string) {
+    return harness.prisma.realtimeSession.findUniqueOrThrow({
+      where: {
+        id: realtimeSessionId
+      }
+    });
+  }
+
+  async function getValidEndedAt(realtimeSessionId: string, offsetMs = 1000) {
+    const realtimeSession = await getStoredRealtimeSession(realtimeSessionId);
+    const candidate = realtimeSession.startedAt.getTime() + offsetMs;
+    const now = Date.now();
+
+    return new Date(Math.max(realtimeSession.startedAt.getTime(), Math.min(candidate, now)));
+  }
+
+  async function setRealtimeSessionStartedAt(realtimeSessionId: string, startedAt: Date) {
+    await harness.prisma.realtimeSession.update({
+      where: {
+        id: realtimeSessionId
+      },
+      data: {
+        startedAt
+      }
     });
   }
 
@@ -283,10 +320,235 @@ describe("usage routes", () => {
     }
   );
 
+  it.each([
+    [
+      "finalWordCount",
+      "negative-final-word-count",
+      "Completed trusted results require a non-negative final word count.",
+      { finalWordCount: -1 }
+    ],
+    [
+      "audioSeconds",
+      "negative-audio-seconds",
+      "Completed trusted results require non-negative audio seconds.",
+      { audioSeconds: -1 }
+    ],
+    [
+      "requestCount",
+      "negative-request-count",
+      "Completed trusted results require a non-negative request count.",
+      { requestCount: -1 }
+    ]
+  ])(
+    "rejects completed trusted settlements when %s is negative and keeps quota state clean",
+    async (negativeField, negativeFieldSlug, expectedMessage, overrides) => {
+      const session = await signIn(`usage-negative-trusted-${negativeFieldSlug}@example.com`);
+      const device = await registerDevice(session, `usage-negative-trusted-${negativeFieldSlug}`);
+      const realtimeSession = await createRealtimeSession(session, device.id);
+
+      await expect(
+        settleRealtimeSession(session, realtimeSession.id, overrides)
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        code: "invalid_trusted_result",
+        message: expectedMessage
+      });
+
+      const storedRealtimeSession = await harness.prisma.realtimeSession.findUniqueOrThrow({
+        where: {
+          id: realtimeSession.id
+        }
+      });
+
+      expect(storedRealtimeSession.status).toBe("OPEN");
+      expect(storedRealtimeSession.endedAt).toBeNull();
+      expect(storedRealtimeSession.finalWordCount).toBeNull();
+      expect(storedRealtimeSession.audioSeconds).toBeNull();
+      expect(storedRealtimeSession.requestCount).toBeNull();
+      expect(storedRealtimeSession.trustedResultSource).toBeNull();
+
+      const finalizeResponse = await harness.app.inject({
+        method: "POST",
+        url: "/v1/usage/finalize",
+        headers: {
+          authorization: `Bearer ${session.access_token}`,
+          "idempotency-key": `usage-negative-trusted-${negativeFieldSlug}`
+        },
+        payload: {
+          realtime_session_id: realtimeSession.id
+        }
+      });
+
+      expect(finalizeResponse.statusCode).toBe(409);
+      expect(finalizeResponse.json().error.code).toBe("trusted_usage_unavailable");
+      expect(await harness.prisma.usageEvent.count()).toBe(0);
+      expect(await harness.prisma.quotaWindow.count()).toBe(0);
+      expect(await harness.prisma.usageRollupWeekly.count()).toBe(0);
+    }
+  );
+
+  it("rejects trusted settlements when endedAt is earlier than realtime session start", async () => {
+    const session = await signIn("usage-ended-before-start@example.com");
+    const device = await registerDevice(session, "usage-ended-before-start");
+    const realtimeSession = await createRealtimeSession(session, device.id);
+    const storedRealtimeSession = await getStoredRealtimeSession(realtimeSession.id);
+    const endedAt = new Date(storedRealtimeSession.startedAt.getTime() - 1_000);
+
+    await expect(
+      settleRealtimeSession(session, realtimeSession.id, { endedAt })
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: "invalid_trusted_result",
+      message: "Trusted result end time cannot be earlier than realtime session start."
+    });
+
+    const rejectedSession = await getStoredRealtimeSession(realtimeSession.id);
+    expect(rejectedSession.status).toBe("OPEN");
+    expect(rejectedSession.endedAt).toBeNull();
+    expect(rejectedSession.trustedResultSource).toBeNull();
+
+    const finalizeResponse = await harness.app.inject({
+      method: "POST",
+      url: "/v1/usage/finalize",
+      headers: {
+        authorization: `Bearer ${session.access_token}`,
+        "idempotency-key": "usage-ended-before-start"
+      },
+      payload: {
+        realtime_session_id: realtimeSession.id
+      }
+    });
+
+    expect(finalizeResponse.statusCode).toBe(409);
+    expect(finalizeResponse.json().error.code).toBe("trusted_usage_unavailable");
+    expect(await harness.prisma.usageEvent.count()).toBe(0);
+    expect(await harness.prisma.quotaWindow.count()).toBe(0);
+    expect(await harness.prisma.usageRollupWeekly.count()).toBe(0);
+  });
+
+  it("rejects trusted settlements when endedAt is materially in the future", async () => {
+    const session = await signIn("usage-ended-in-future@example.com");
+    const device = await registerDevice(session, "usage-ended-in-future");
+    const realtimeSession = await createRealtimeSession(session, device.id);
+    const endedAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await expect(
+      settleRealtimeSession(session, realtimeSession.id, { endedAt })
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: "invalid_trusted_result",
+      message: "Trusted result end time cannot be materially in the future."
+    });
+
+    const rejectedSession = await getStoredRealtimeSession(realtimeSession.id);
+    expect(rejectedSession.status).toBe("OPEN");
+    expect(rejectedSession.endedAt).toBeNull();
+    expect(rejectedSession.trustedResultSource).toBeNull();
+
+    const finalizeResponse = await harness.app.inject({
+      method: "POST",
+      url: "/v1/usage/finalize",
+      headers: {
+        authorization: `Bearer ${session.access_token}`,
+        "idempotency-key": "usage-ended-in-future"
+      },
+      payload: {
+        realtime_session_id: realtimeSession.id
+      }
+    });
+
+    expect(finalizeResponse.statusCode).toBe(409);
+    expect(finalizeResponse.json().error.code).toBe("trusted_usage_unavailable");
+    expect(await harness.prisma.usageEvent.count()).toBe(0);
+    expect(await harness.prisma.quotaWindow.count()).toBe(0);
+    expect(await harness.prisma.usageRollupWeekly.count()).toBe(0);
+  });
+
+  it("refuses to finalize already-corrupted negative trusted session snapshots", async () => {
+    const session = await signIn("usage-corrupted-trusted-session@example.com");
+    const device = await registerDevice(session, "usage-corrupted-trusted-session");
+    const realtimeSession = await createRealtimeSession(session, device.id);
+    const endedAt = await getValidEndedAt(realtimeSession.id);
+
+    await harness.prisma.realtimeSession.update({
+      where: {
+        id: realtimeSession.id
+      },
+      data: {
+        status: "COMPLETED",
+        providerSessionRef: "corrupted-negative-session",
+        trustedResultSource: "corrupted_fixture",
+        endedAt,
+        finalWordCount: -10,
+        audioSeconds: -2,
+        requestCount: -1
+      }
+    });
+
+    const finalizeResponse = await harness.app.inject({
+      method: "POST",
+      url: "/v1/usage/finalize",
+      headers: {
+        authorization: `Bearer ${session.access_token}`,
+        "idempotency-key": "usage-corrupted-negative-finalize"
+      },
+      payload: {
+        realtime_session_id: realtimeSession.id
+      }
+    });
+
+    expect(finalizeResponse.statusCode).toBe(409);
+    expect(finalizeResponse.json().error.code).toBe("trusted_usage_unavailable");
+    expect(await harness.prisma.usageEvent.count()).toBe(0);
+    expect(await harness.prisma.quotaWindow.count()).toBe(0);
+    expect(await harness.prisma.usageRollupWeekly.count()).toBe(0);
+  });
+
+  it("refuses to finalize already-corrupted future trusted session snapshots", async () => {
+    const session = await signIn("usage-corrupted-future-trusted-session@example.com");
+    const device = await registerDevice(session, "usage-corrupted-future-trusted-session");
+    const realtimeSession = await createRealtimeSession(session, device.id);
+
+    await harness.prisma.realtimeSession.update({
+      where: {
+        id: realtimeSession.id
+      },
+      data: {
+        status: "COMPLETED",
+        providerSessionRef: "corrupted-future-session",
+        trustedResultSource: "corrupted_fixture",
+        endedAt: new Date(Date.now() + 10 * 60 * 1000),
+        finalWordCount: 500,
+        audioSeconds: 20,
+        requestCount: 1
+      }
+    });
+
+    const finalizeResponse = await harness.app.inject({
+      method: "POST",
+      url: "/v1/usage/finalize",
+      headers: {
+        authorization: `Bearer ${session.access_token}`,
+        "idempotency-key": "usage-corrupted-future-finalize"
+      },
+      payload: {
+        realtime_session_id: realtimeSession.id
+      }
+    });
+
+    expect(finalizeResponse.statusCode).toBe(409);
+    expect(finalizeResponse.json().error.code).toBe("trusted_usage_unavailable");
+    expect(await harness.prisma.usageEvent.count()).toBe(0);
+    expect(await harness.prisma.quotaWindow.count()).toBe(0);
+    expect(await harness.prisma.usageRollupWeekly.count()).toBe(0);
+  });
+
   it("settles trusted results through service code and finalizes idempotently from trusted session data only", async () => {
     const session = await signIn("usage-finalize@example.com");
     const device = await registerDevice(session, "usage-finalize-device");
     const realtimeSession = await createRealtimeSession(session, device.id);
+    const endedAt = await getValidEndedAt(realtimeSession.id);
+    const weekWindow = getUtcWeekWindow(endedAt);
 
     const missingTrustedResponse = await harness.app.inject({
       method: "POST",
@@ -305,7 +567,7 @@ describe("usage routes", () => {
 
     const settled = await settleRealtimeSession(session, realtimeSession.id, {
       providerSessionRef: "rt-session-finalize-1",
-      endedAt: new Date("2026-03-26T11:00:00.000Z"),
+      endedAt,
       finalWordCount: 321,
       audioSeconds: 27,
       requestCount: 1
@@ -320,7 +582,7 @@ describe("usage routes", () => {
         provider_session_ref: "rt-session-finalize-1",
         status: "completed",
         started_at: expect.any(String) as string,
-        ended_at: "2026-03-26T11:00:00.000Z",
+        ended_at: endedAt.toISOString(),
         final_word_count: 321,
         audio_seconds: 27,
         request_count: 1,
@@ -374,12 +636,12 @@ describe("usage routes", () => {
         audio_seconds: 27,
         request_count: 1,
         status: "finalized",
-        occurred_at: "2026-03-26T11:00:00.000Z"
+        occurred_at: endedAt.toISOString()
       },
       quota: {
         feature_code: "dictation",
-        window_start: "2026-03-23T00:00:00.000Z",
-        window_end: "2026-03-30T00:00:00.000Z",
+        window_start: weekWindow.windowStart.toISOString(),
+        window_end: weekWindow.windowEnd.toISOString(),
         word_limit: 10000,
         used_words: 321,
         remaining_words: 9679,
@@ -388,8 +650,8 @@ describe("usage routes", () => {
         entitlement_status: "active"
       },
       summary: {
-        week_start: "2026-03-23T00:00:00.000Z",
-        week_end: "2026-03-30T00:00:00.000Z",
+        week_start: weekWindow.windowStart.toISOString(),
+        week_end: weekWindow.windowEnd.toISOString(),
         total_words: 321,
         total_audio_seconds: 27,
         total_requests: 1
@@ -463,17 +725,19 @@ describe("usage routes", () => {
     const secondRealtimeSession = await createRealtimeSession(session, device.id, {
       provider_session_ref: "rt-session-free-2"
     });
+    const firstEndedAt = await getValidEndedAt(firstRealtimeSession.id);
+    const secondEndedAt = await getValidEndedAt(secondRealtimeSession.id, 2_000);
 
     await settleRealtimeSession(session, firstRealtimeSession.id, {
       providerSessionRef: "rt-session-free-1",
-      endedAt: new Date("2026-03-26T12:00:00.000Z"),
+      endedAt: firstEndedAt,
       finalWordCount: 8000,
       audioSeconds: 100,
       requestCount: 1
     });
     await settleRealtimeSession(session, secondRealtimeSession.id, {
       providerSessionRef: "rt-session-free-2",
-      endedAt: new Date("2026-03-26T12:05:00.000Z"),
+      endedAt: secondEndedAt,
       finalWordCount: 2501,
       audioSeconds: 60,
       requestCount: 1
@@ -562,9 +826,10 @@ describe("usage routes", () => {
     });
 
     const realtimeSession = await createRealtimeSession(session, device.id);
+    const endedAt = await getValidEndedAt(realtimeSession.id);
     await settleRealtimeSession(session, realtimeSession.id, {
       providerSessionRef: "rt-session-paid-1",
-      endedAt: new Date("2026-03-26T13:00:00.000Z"),
+      endedAt,
       finalWordCount: 50000,
       audioSeconds: 600,
       requestCount: 3
@@ -714,10 +979,18 @@ describe("usage routes", () => {
   });
 
   it("rolls quota windows and weekly rollups at Monday 00:00 UTC", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-03-30T00:00:01.000Z"));
+
     const session = await signIn("usage-rollover@example.com");
     const device = await registerDevice(session, "usage-rollover-device");
     const sundaySession = await createRealtimeSession(session, device.id);
     const mondaySession = await createRealtimeSession(session, device.id);
+    const sundayStartedAt = new Date("2026-03-29T23:59:58.000Z");
+    const mondayStartedAt = new Date("2026-03-30T00:00:00.000Z");
+
+    await setRealtimeSessionStartedAt(sundaySession.id, sundayStartedAt);
+    await setRealtimeSessionStartedAt(mondaySession.id, mondayStartedAt);
 
     await settleRealtimeSession(session, sundaySession.id, {
       providerSessionRef: "rt-session-sunday",
@@ -820,17 +1093,19 @@ describe("usage routes", () => {
     const secondRealtimeSession = await createRealtimeSession(session, device.id, {
       provider_session_ref: "rt-session-concurrency-2"
     });
+    const firstEndedAt = await getValidEndedAt(firstRealtimeSession.id);
+    const secondEndedAt = await getValidEndedAt(secondRealtimeSession.id, 2_000);
 
     await settleRealtimeSession(session, firstRealtimeSession.id, {
       providerSessionRef: "rt-session-concurrency-1",
-      endedAt: new Date("2026-03-26T14:00:00.000Z"),
+      endedAt: firstEndedAt,
       finalWordCount: 6000,
       audioSeconds: 50,
       requestCount: 1
     });
     await settleRealtimeSession(session, secondRealtimeSession.id, {
       providerSessionRef: "rt-session-concurrency-2",
-      endedAt: new Date("2026-03-26T14:00:01.000Z"),
+      endedAt: secondEndedAt,
       finalWordCount: 6000,
       audioSeconds: 55,
       requestCount: 1

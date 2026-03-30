@@ -1,3 +1,5 @@
+import type { Writable } from "node:stream";
+
 import cors from "@fastify/cors";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -6,7 +8,11 @@ import { ZodError } from "zod";
 import { getConfig } from "./config/env";
 import { AppError } from "./lib/app-error";
 import { createEmailProvider, type EmailProvider } from "./lib/email-provider";
+import { createErrorTracker, type ErrorTracker } from "./lib/error-tracking";
 import { getPrismaClient } from "./lib/prisma";
+import { buildAdminRoutes } from "./modules/admin/routes";
+import { AdminRepository } from "./modules/admin/repository";
+import { AdminService } from "./modules/admin/service";
 import { buildAuthRoutes } from "./modules/auth/routes";
 import { GoogleIdTokenVerifier, type GoogleVerifier } from "./modules/auth/google";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./modules/auth/rate-limiter";
@@ -14,8 +20,9 @@ import { AuthRepository } from "./modules/auth/repository";
 import { AuthService } from "./modules/auth/service";
 import { buildBillingRoutes, buildStripeWebhookRoutes } from "./modules/billing/routes";
 import { LiveGooglePlayProvider } from "./modules/billing/google-play";
+import { LivePaddleProvider } from "./modules/billing/paddle";
 import { BillingRepository } from "./modules/billing/repository";
-import type { GooglePlayProvider, StripeProvider } from "./modules/billing/provider";
+import type { GooglePlayProvider, PaddleProvider, StripeProvider } from "./modules/billing/provider";
 import { BillingService } from "./modules/billing/service";
 import { LiveStripeProvider } from "./modules/billing/stripe";
 import { DeviceRepository } from "./modules/devices/repository";
@@ -37,6 +44,7 @@ import { UsageRepository } from "./modules/usage/repository";
 import { UsageService } from "./modules/usage/service";
 import { buildUserRoutes } from "./modules/users/routes";
 import { UserService } from "./modules/users/service";
+import { registerAdminPlugin } from "./plugins/admin";
 import { registerAuthPlugin } from "./plugins/auth";
 
 interface BuildAppOptions {
@@ -44,8 +52,11 @@ interface BuildAppOptions {
   emailProvider?: EmailProvider;
   googleVerifier?: GoogleVerifier;
   authRateLimiter?: AuthRateLimiter;
+  paddleProvider?: PaddleProvider;
   stripeProvider?: StripeProvider;
   googlePlayProvider?: GooglePlayProvider;
+  errorTracker?: ErrorTracker;
+  loggerStream?: Writable;
 }
 
 export async function buildApp(
@@ -55,9 +66,12 @@ export async function buildApp(
   const prisma = options.prisma ?? getPrismaClient();
   const emailProvider = options.emailProvider ?? createEmailProvider(config);
   const googleVerifier = options.googleVerifier ?? new GoogleIdTokenVerifier(config.googleClientId);
-  const authRateLimiter = options.authRateLimiter ?? createAuthRateLimiter(config);
+  const paddleProvider = options.paddleProvider
+    ?? new LivePaddleProvider(config.paddleApiKey, config.paddleWebhookSecret);
   const stripeProvider = options.stripeProvider
-    ?? new LiveStripeProvider(config.stripeSecretKey, config.stripeWebhookSecret);
+    ?? (config.stripeSecretKey && config.stripeWebhookSecret
+      ? new LiveStripeProvider(config.stripeSecretKey, config.stripeWebhookSecret)
+      : null);
   const googlePlayProvider = options.googlePlayProvider
     ?? new LiveGooglePlayProvider(
       config.playPackageName,
@@ -67,9 +81,13 @@ export async function buildApp(
     );
   const securityRepository = new SecurityRepository(prisma);
   const securityService = new SecurityService(securityRepository);
+  const errorTracker = options.errorTracker ?? createErrorTracker(config);
   const organizationService = new OrganizationService(prisma);
   const userService = new UserService(prisma);
   const authRepository = new AuthRepository(prisma);
+  const authRateLimiter = options.authRateLimiter
+    ?? createAuthRateLimiter(config, authRepository, securityService);
+  const adminRepository = new AdminRepository(prisma);
   const billingRepository = new BillingRepository(prisma);
   const entitlementRepository = new EntitlementRepository(prisma);
   const entitlementService = new EntitlementService(billingRepository, entitlementRepository);
@@ -78,6 +96,7 @@ export async function buildApp(
   const preferencesRepository = new PreferencesRepository(prisma);
   const preferencesService = new PreferencesService(prisma, preferencesRepository);
   const usageRepository = new UsageRepository(prisma);
+  const adminService = new AdminService(adminRepository, securityService);
   const usageService = new UsageService(
     prisma,
     usageRepository,
@@ -89,8 +108,11 @@ export async function buildApp(
     prisma,
     billingRepository,
     entitlementService,
-    stripeProvider,
-    googlePlayProvider
+    {
+      paddle: paddleProvider,
+      stripe: stripeProvider,
+      googlePlay: googlePlayProvider
+    }
   );
   const authService = new AuthService(
     prisma,
@@ -103,29 +125,80 @@ export async function buildApp(
     googleVerifier
   );
   const app = Fastify({
-    logger: true,
+    logger: {
+      level: options.loggerStream ? "info" : config.nodeEnv === "test" ? "silent" : "info",
+      stream: options.loggerStream,
+      redact: {
+        paths: [
+          "req.headers.authorization",
+          "req.headers.cookie",
+          "req.headers.paddle-signature",
+          "req.headers.stripe-signature",
+          "req.body.code",
+          "req.body.id_token",
+          "req.body.refresh_token",
+          "req.body.raw_ip_ciphertext",
+          "req.body.payload_json",
+          "headers.authorization",
+          "headers.cookie",
+          "headers.paddle-signature",
+          "headers.stripe-signature",
+          "body.code",
+          "body.id_token",
+          "body.refresh_token",
+          "body.raw_ip_ciphertext",
+          "body.payload_json"
+        ],
+        censor: "[REDACTED]"
+      }
+    },
     bodyLimit: config.maxJsonBodyBytes,
     requestIdHeader: "x-request-id"
   });
 
-  await app.register(cors, {
-    origin(origin, callback) {
-      if (!origin || config.allowedOrigins.includes(origin)) {
-        callback(null, true);
-        return;
-      }
+  app.addHook("onRequest", async (request) => {
+    const origin = request.headers.origin;
 
-      callback(new Error("Origin not allowed"), false);
+    if (origin && !config.allowedOrigins.includes(origin)) {
+      throw new AppError(403, "origin_not_allowed", "Origin is not allowed.");
     }
   });
 
-  app.setErrorHandler((error, request, reply) => {
+  await app.register(cors, {
+    origin(origin, callback) {
+      callback(null, !origin || config.allowedOrigins.includes(origin));
+    }
+  });
+
+  app.setErrorHandler(async (error, request, reply) => {
     const requestId = request.id;
     const prismaAppError = mapPrismaError(error);
     const normalizedError = prismaAppError ?? error;
     const message = normalizedError instanceof Error ? normalizedError.message : "Request failed.";
+    const statusCode = typeof (normalizedError as { statusCode?: number }).statusCode === "number"
+      ? (normalizedError as { statusCode: number }).statusCode
+      : 500;
 
-    request.log.error({ err: error }, "Request failed");
+    if (statusCode >= 500) {
+      request.log.error({ err: error }, "Request failed");
+
+      try {
+        await errorTracker.captureException(
+          error,
+          {
+            requestId,
+            method: request.method,
+            url: request.url,
+            userId: request.auth?.userId ?? null
+          },
+          request
+        );
+      } catch (captureError) {
+        request.log.warn({ err: captureError }, "Error tracker capture failed");
+      }
+    } else {
+      request.log.warn({ err: normalizedError }, "Request rejected");
+    }
 
     if (normalizedError instanceof ZodError) {
       reply.status(400).send({
@@ -153,10 +226,6 @@ export async function buildApp(
       return;
     }
 
-    const statusCode = typeof (normalizedError as { statusCode?: number }).statusCode === "number"
-      ? (normalizedError as { statusCode: number }).statusCode
-      : 500;
-
     reply.status(statusCode).send({
       error: {
         code: statusCode >= 500 ? "internal_error" : "request_error",
@@ -172,6 +241,7 @@ export async function buildApp(
   });
 
   await registerAuthPlugin(app, { authService });
+  await registerAdminPlugin(app, { securityService });
   await app.register(buildHealthRoutes({ prisma }));
   await app.register(buildAuthRoutes({ authService, authRateLimiter }), {
     prefix: "/v1/auth"
@@ -199,6 +269,9 @@ export async function buildApp(
   });
   await app.register(buildUsageRoutes({ usageService }), {
     prefix: "/v1"
+  });
+  await app.register(buildAdminRoutes({ adminService }), {
+    prefix: "/v1/admin"
   });
 
   app.get("/", async () => ({

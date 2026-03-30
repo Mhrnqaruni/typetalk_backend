@@ -13,7 +13,7 @@ describe("email auth flows", () => {
   beforeEach(async () => {
     await resetDatabase(harness.prisma);
     harness.emailProvider.sentOtps.length = 0;
-    harness.authRateLimiter.reset();
+    await harness.authRateLimiter.reset();
   });
 
   afterAll(async () => {
@@ -98,6 +98,45 @@ describe("email auth flows", () => {
     });
 
     expect(activeChallenges).toHaveLength(1);
+  });
+
+  it("preserves the durable per-email OTP issuance throttle and records a security event", async () => {
+    const throttleHarness = await createTestHarness({
+      requestCodeMaxPerIp: 20,
+      verifyCodeMaxPerIp: 10
+    });
+
+    try {
+      await resetDatabase(throttleHarness.prisma);
+      await throttleHarness.authRateLimiter.reset();
+
+      const statuses: number[] = [];
+
+      for (let index = 0; index < 6; index += 1) {
+        const response = await throttleHarness.app.inject({
+          method: "POST",
+          url: "/v1/auth/email/request-code",
+          payload: {
+            email: "throttle@example.com"
+          }
+        });
+
+        statuses.push(response.statusCode);
+      }
+
+      const securityEvents = await throttleHarness.prisma.securityEvent.findMany({
+        where: {
+          eventType: "otp_request_email_throttled"
+        }
+      });
+
+      expect(statuses).toEqual([202, 202, 202, 202, 202, 429]);
+      expect(throttleHarness.emailProvider.sentOtps).toHaveLength(5);
+      expect(securityEvents).toHaveLength(1);
+    } finally {
+      await throttleHarness.app.close();
+      await throttleHarness.prisma.$disconnect();
+    }
   });
 
   it("verifies OTP codes, creates the user workspace, and stores session metadata", async () => {
@@ -243,6 +282,11 @@ describe("email auth flows", () => {
     });
 
     expect(lockedResponse.statusCode).toBe(429);
+    expect(await harness.prisma.securityEvent.count({
+      where: {
+        eventType: "otp_challenge_locked"
+      }
+    })).toBe(1);
 
     await resetDatabase(harness.prisma);
     harness.emailProvider.sentOtps.length = 0;
@@ -292,7 +336,7 @@ describe("email auth flows", () => {
     try {
       await resetDatabase(limitedHarness.prisma);
       limitedHarness.emailProvider.sentOtps.length = 0;
-      limitedHarness.authRateLimiter.reset();
+      await limitedHarness.authRateLimiter.reset();
 
       const requestStatuses: number[] = [];
 
@@ -310,10 +354,25 @@ describe("email auth flows", () => {
 
       expect(requestStatuses).toEqual([202, 202, 202, 202, 429]);
       expect(limitedHarness.emailProvider.sentOtps).toHaveLength(4);
+      expect(await limitedHarness.prisma.authRateLimitBucket.count({
+        where: {
+          scope: "auth_email_request"
+        }
+      })).toBe(1);
+      expect(await limitedHarness.prisma.securityEvent.count({
+        where: {
+          eventType: "auth_rate_limit_hit"
+        }
+      })).toBe(1);
+      expect(await limitedHarness.prisma.ipObservation.count({
+        where: {
+          source: "auth_email_request"
+        }
+      })).toBe(1);
 
       await resetDatabase(limitedHarness.prisma);
       limitedHarness.emailProvider.sentOtps.length = 0;
-      limitedHarness.authRateLimiter.reset();
+      await limitedHarness.authRateLimiter.reset();
 
       for (let index = 0; index < 4; index += 1) {
         await limitedHarness.app.inject({
@@ -325,7 +384,7 @@ describe("email auth flows", () => {
         });
       }
 
-      limitedHarness.authRateLimiter.reset();
+      await limitedHarness.authRateLimiter.reset();
 
       const verifyStatuses: number[] = [];
 
@@ -343,9 +402,86 @@ describe("email auth flows", () => {
       }
 
       expect(verifyStatuses).toEqual([401, 401, 401, 429]);
+      expect(await limitedHarness.prisma.authRateLimitBucket.count({
+        where: {
+          scope: "auth_email_verify"
+        }
+      })).toBe(1);
+      expect(await limitedHarness.prisma.securityEvent.count({
+        where: {
+          eventType: "auth_rate_limit_hit"
+        }
+      })).toBe(1);
+      expect(await limitedHarness.prisma.ipObservation.count({
+        where: {
+          source: "auth_email_verify"
+        }
+      })).toBe(1);
     } finally {
       await limitedHarness.app.close();
       await limitedHarness.prisma.$disconnect();
+    }
+  });
+
+  it("keeps the durable per-IP request limiter active across app recreation", async () => {
+    const firstHarness = await createTestHarness({
+      requestCodeMaxPerIp: 2,
+      verifyCodeMaxPerIp: 3
+    });
+
+    try {
+      await resetDatabase(firstHarness.prisma);
+      await firstHarness.authRateLimiter.reset();
+
+      const first = await firstHarness.app.inject({
+        method: "POST",
+        url: "/v1/auth/email/request-code",
+        payload: {
+          email: "restart-1@example.com"
+        }
+      });
+      const second = await firstHarness.app.inject({
+        method: "POST",
+        url: "/v1/auth/email/request-code",
+        payload: {
+          email: "restart-2@example.com"
+        }
+      });
+
+      expect(first.statusCode).toBe(202);
+      expect(second.statusCode).toBe(202);
+
+      await firstHarness.app.close();
+      await firstHarness.prisma.$disconnect();
+
+      const secondHarness = await createTestHarness({
+        requestCodeMaxPerIp: 2,
+        verifyCodeMaxPerIp: 3
+      });
+
+      try {
+        const limited = await secondHarness.app.inject({
+          method: "POST",
+          url: "/v1/auth/email/request-code",
+          payload: {
+            email: "restart-3@example.com"
+          }
+        });
+
+        expect(limited.statusCode).toBe(429);
+        expect(await secondHarness.prisma.authRateLimitBucket.count({
+          where: {
+            scope: "auth_email_request"
+          }
+        })).toBe(1);
+      } finally {
+        await secondHarness.app.close();
+        await secondHarness.prisma.$disconnect();
+      }
+    } catch (error) {
+      await firstHarness.app.close().catch(() => undefined);
+      await firstHarness.prisma.$disconnect().catch(() => undefined);
+      throw error;
     }
   });
 });

@@ -2,8 +2,9 @@ import { PrismaClient } from "@prisma/client";
 
 import { getConfig } from "../config/env";
 import { LiveGooglePlayProvider } from "../modules/billing/google-play";
+import { LivePaddleProvider } from "../modules/billing/paddle";
 import { BillingRepository } from "../modules/billing/repository";
-import type { GooglePlayProvider, StripeProvider } from "../modules/billing/provider";
+import type { GooglePlayProvider, PaddleProvider, StripeProvider } from "../modules/billing/provider";
 import { BillingService } from "../modules/billing/service";
 import { LiveStripeProvider } from "../modules/billing/stripe";
 import { EntitlementRepository } from "../modules/entitlements/repository";
@@ -12,6 +13,7 @@ import { EntitlementService } from "../modules/entitlements/service";
 export async function runWebhookRetryJob(
   prisma?: PrismaClient,
   options?: {
+    paddleProvider?: PaddleProvider;
     stripeProvider?: StripeProvider;
     googlePlayProvider?: GooglePlayProvider;
   }
@@ -25,13 +27,21 @@ export async function runWebhookRetryJob(
     client,
     billingRepository,
     entitlementService,
-    options?.stripeProvider ?? new LiveStripeProvider(config.stripeSecretKey, config.stripeWebhookSecret),
-    options?.googlePlayProvider ?? new LiveGooglePlayProvider(
-      config.playPackageName,
-      config.playServiceAccountJson,
-      config.playPubsubAudience,
-      config.playPubsubServiceAccount
-    )
+    {
+      paddle: options?.paddleProvider
+        ?? new LivePaddleProvider(config.paddleApiKey, config.paddleWebhookSecret),
+      stripe: options?.stripeProvider
+        ?? (config.stripeSecretKey && config.stripeWebhookSecret
+          ? new LiveStripeProvider(config.stripeSecretKey, config.stripeWebhookSecret)
+          : null),
+      googlePlay: options?.googlePlayProvider
+        ?? new LiveGooglePlayProvider(
+          config.playPackageName,
+          config.playServiceAccountJson,
+          config.playPubsubAudience,
+          config.playPubsubServiceAccount
+        )
+    }
   );
 
   try {

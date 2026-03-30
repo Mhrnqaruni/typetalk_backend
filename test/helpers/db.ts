@@ -3,6 +3,9 @@ import type { PrismaClient } from "@prisma/client";
 export async function resetDatabase(prisma: PrismaClient): Promise<void> {
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
+      "audit_logs",
+      "auth_rate_limit_buckets",
+      "ip_observations",
       "usage_rollups_weekly",
       "usage_events",
       "quota_windows",

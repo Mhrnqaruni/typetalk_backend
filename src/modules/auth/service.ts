@@ -8,6 +8,7 @@ import { AppError } from "../../lib/app-error";
 import { hashIpAddress, hashOtpCode, hashRefreshSecret, hashesMatch, generateOpaqueSecret } from "../../lib/crypto";
 import { normalizeEmail } from "../../lib/email";
 import type { EmailProvider } from "../../lib/email-provider";
+import type { RequestMetadata } from "../../lib/request-metadata";
 import { buildRefreshToken, issueAccessToken, parseRefreshToken, verifyAccessToken } from "../../lib/tokens";
 import { getConfig, type AppConfig } from "../../config/env";
 import { DeviceService } from "../devices/service";
@@ -18,12 +19,6 @@ import { UserService } from "../users/service";
 import { type GoogleVerifier } from "./google";
 import { createOtpChallenge } from "./otp";
 import { AuthRepository } from "./repository";
-
-export interface RequestMetadata {
-  userAgent?: string | null;
-  ipAddress?: string | null;
-  ipCountryCode?: string | null;
-}
 
 export interface AuthContext {
   userId: string;
@@ -104,21 +99,24 @@ export class AuthService {
       if (!challenge) {
         return {
           ok: false as const,
-          error: new AppError(401, "invalid_otp", "OTP challenge was not found.")
+          error: new AppError(401, "invalid_otp", "OTP challenge was not found."),
+          lockedChallenge: null
         };
       }
 
       if (challenge.expiresAt <= now) {
         return {
           ok: false as const,
-          error: new AppError(401, "expired_otp", "OTP has expired.")
+          error: new AppError(401, "expired_otp", "OTP has expired."),
+          lockedChallenge: null
         };
       }
 
       if (challenge.attemptCount >= challenge.maxAttempts) {
         return {
           ok: false as const,
-          error: new AppError(429, "otp_locked", "OTP verification attempts exceeded.")
+          error: new AppError(429, "otp_locked", "OTP verification attempts exceeded."),
+          lockedChallenge: null
         };
       }
 
@@ -132,20 +130,28 @@ export class AuthService {
         if (!updatedChallenge) {
           return {
             ok: false as const,
-            error: new AppError(401, "invalid_otp", "OTP challenge was not found.")
+            error: new AppError(401, "invalid_otp", "OTP challenge was not found."),
+            lockedChallenge: null
           };
         }
 
         if (updatedChallenge.attemptCount >= updatedChallenge.maxAttempts) {
           return {
             ok: false as const,
-            error: new AppError(429, "otp_locked", "OTP verification attempts exceeded.")
+            error: new AppError(429, "otp_locked", "OTP verification attempts exceeded."),
+            lockedChallenge: {
+              id: updatedChallenge.id,
+              purpose,
+              attemptCount: updatedChallenge.attemptCount,
+              maxAttempts: updatedChallenge.maxAttempts
+            }
           };
         }
 
         return {
           ok: false as const,
-          error: new AppError(401, "invalid_otp", "OTP code is invalid.")
+          error: new AppError(401, "invalid_otp", "OTP code is invalid."),
+          lockedChallenge: null
         };
       }
 
@@ -158,7 +164,8 @@ export class AuthService {
       if (!challengeConsumed) {
         return {
           ok: false as const,
-          error: new AppError(401, "invalid_otp", "OTP challenge was already used.")
+          error: new AppError(401, "invalid_otp", "OTP challenge was already used."),
+          lockedChallenge: null
         };
       }
 
@@ -192,6 +199,17 @@ export class AuthService {
     });
 
     if (!result.ok) {
+      if (result.lockedChallenge) {
+        await this.securityService.recordOtpChallengeLocked({
+          challengeId: result.lockedChallenge.id,
+          purpose: result.lockedChallenge.purpose,
+          attemptCount: result.lockedChallenge.attemptCount,
+          maxAttempts: result.lockedChallenge.maxAttempts,
+          ipAddress: metadata.ipAddress,
+          countryCode: metadata.ipCountryCode
+        });
+      }
+
       throw result.error;
     }
 
@@ -604,7 +622,7 @@ export class AuthService {
       const otpChallenge = createOtpChallenge(this.config.appEncryptionKey);
 
       try {
-        await this.prisma.$transaction(async (transaction) => {
+        const result = await this.prisma.$transaction(async (transaction) => {
           const recentChallengeCount = await this.repository.countRecentChallenges(
             email,
             purpose,
@@ -613,7 +631,10 @@ export class AuthService {
           );
 
           if (recentChallengeCount >= this.config.otpMaxAttempts) {
-            throw new AppError(429, "rate_limited", "Too many OTP requests. Try again later.");
+            return {
+              ok: false as const,
+              recentChallengeCount
+            };
           }
 
           await this.repository.supersedeActiveChallenges(email, purpose, now, transaction);
@@ -625,9 +646,24 @@ export class AuthService {
             maxAttempts: this.config.otpMaxAttempts,
             expiresAt: new Date(now.getTime() + this.config.otpExpiryMinutes * 60_000)
           }, transaction);
+
+          return {
+            ok: true as const
+          };
         }, {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable
         });
+
+        if (!result.ok) {
+          await this.securityService.recordOtpRequestEmailThrottle({
+            purpose,
+            recentChallengeCount: result.recentChallengeCount,
+            maxAllowed: this.config.otpMaxAttempts,
+            ipAddress: metadata.ipAddress,
+            countryCode: metadata.ipCountryCode
+          });
+          throw new AppError(429, "rate_limited", "Too many OTP requests. Try again later.");
+        }
 
         return otpChallenge.code;
       } catch (error) {

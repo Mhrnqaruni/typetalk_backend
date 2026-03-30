@@ -42,6 +42,7 @@ enum DevicePlatform {
 }
 
 enum BillingProvider {
+  PADDLE
   STRIPE
   GOOGLE_PLAY
 }
@@ -125,6 +126,9 @@ model User {
   dictionaryEntries  DictionaryEntry[]
   devices            Device[]
   entitlements       Entitlement[]
+  auditActorLogs     AuditLog[]           @relation("audit_actor_user")
+  auditTargetLogs    AuditLog[]           @relation("audit_target_user")
+  ipObservations     IpObservation[]
   memberships        OrganizationMember[]
   ownedOrganizations Organization[]       @relation("organization_owner")
   preferences        UserPreference?
@@ -200,8 +204,10 @@ model Organization {
   ownerUserId       String               @map("owner_user_id")
   createdAt         DateTime             @default(now()) @map("created_at")
   appProfiles       AppProfile[]
+  auditLogs         AuditLog[]
   dictionaryEntries DictionaryEntry[]
   entitlements      Entitlement[]
+  ipObservations    IpObservation[]
   members           OrganizationMember[]
   ownerUser         User                 @relation("organization_owner", fields: [ownerUserId], references: [id], onDelete: Cascade)
   providerCustomers ProviderCustomer[]
@@ -243,6 +249,7 @@ model Device {
   timezone       String?
   lastSeenAt     DateTime        @default(now()) @map("last_seen_at")
   createdAt      DateTime        @default(now()) @map("created_at")
+  ipObservations IpObservation[]
   realtimeSessions RealtimeSession[]
   securityEvents SecurityEvent[]
   sessions       Session[]
@@ -333,6 +340,7 @@ model Plan {
   billingInterval  BillingInterval @map("billing_interval")
   weeklyWordLimit  Int             @map("weekly_word_limit")
   trialDays        Int             @default(0) @map("trial_days")
+  paddlePriceId    String?         @unique @map("paddle_price_id")
   stripePriceId    String?         @unique @map("stripe_price_id")
   googleProductId  String?         @map("google_product_id")
   googleBasePlanId String?         @map("google_base_plan_id")
@@ -569,5 +577,70 @@ model SecurityEvent {
 
   @@index([organizationId, createdAt])
   @@index([userId, createdAt])
+  @@index([eventType, createdAt])
+  @@index([ipHash, createdAt])
   @@map("security_events")
+}
+
+model IpObservation {
+  id              String       @id @default(cuid())
+  userId          String?      @map("user_id")
+  organizationId  String?      @map("organization_id")
+  deviceId        String?      @map("device_id")
+  ipHash          String       @map("ip_hash")
+  hashKeyVersion  Int          @default(1) @map("hash_key_version")
+  rawIpCiphertext String?      @map("raw_ip_ciphertext")
+  rawIpExpiresAt  DateTime?    @map("raw_ip_expires_at")
+  countryCode     String?      @map("country_code")
+  region          String?
+  asn             String?
+  source          String
+  metadataJson    Json?        @map("metadata_json")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  device          Device?      @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  organization    Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  user            User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([ipHash, createdAt])
+  @@index([rawIpExpiresAt])
+  @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+  @@map("ip_observations")
+}
+
+model AuthRateLimitBucket {
+  scope       String
+  ipHash      String   @map("ip_hash")
+  windowStart DateTime @map("window_start")
+  hitCount    Int      @default(0) @map("hit_count")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@id([scope, ipHash, windowStart])
+  @@index([windowStart])
+  @@map("auth_rate_limit_buckets")
+}
+
+model AuditLog {
+  id              String       @id @default(cuid())
+  organizationId  String?      @map("organization_id")
+  actorUserId     String?      @map("actor_user_id")
+  actorType       String       @map("actor_type")
+  actorId         String       @map("actor_id")
+  targetType      String       @map("target_type")
+  targetId        String?      @map("target_id")
+  targetUserId    String?      @map("target_user_id")
+  action          String
+  requestId       String?      @map("request_id")
+  metadataJson    Json?        @map("metadata_json")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  actorUser       User?        @relation("audit_actor_user", fields: [actorUserId], references: [id], onDelete: SetNull)
+  organization    Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  targetUser      User?        @relation("audit_target_user", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([requestId])
+  @@index([targetUserId, createdAt])
+  @@map("audit_logs")
 }

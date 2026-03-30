@@ -25,6 +25,7 @@ import { type UsageDbClient, UsageRepository } from "./repository";
 import { getUtcWeekWindow } from "./window";
 
 const MAX_REALTIME_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
+const MAX_TRUSTED_RESULT_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 function toApiRealtimeSessionStatus(status: RealtimeSessionStatus): string {
   return status.toLowerCase();
@@ -195,6 +196,8 @@ export class UsageService {
         "Realtime session provider reference does not match the trusted result."
       );
     }
+
+    this.assertTrustedEndedAtIsValid(existingSession.startedAt, input.endedAt, new Date());
 
     const updatedSession = await this.usageRepository.updateTrustedRealtimeSession({
       organizationId: input.organizationId,
@@ -628,6 +631,19 @@ export class UsageService {
       );
     }
 
+    this.assertNonNegativeTrustedMetric(
+      input.finalWordCount,
+      "Completed trusted results require a non-negative final word count."
+    );
+    this.assertNonNegativeTrustedMetric(
+      input.audioSeconds,
+      "Completed trusted results require non-negative audio seconds."
+    );
+    this.assertNonNegativeTrustedMetric(
+      input.requestCount,
+      "Completed trusted results require a non-negative request count."
+    );
+
     return {
       finalWordCount: input.finalWordCount,
       audioSeconds: input.audioSeconds,
@@ -640,13 +656,17 @@ export class UsageService {
       return null;
     }
 
-    const { endedAt, finalWordCount, audioSeconds, requestCount } = realtimeSession;
+    const { startedAt, endedAt, finalWordCount, audioSeconds, requestCount } = realtimeSession;
 
     if (
       endedAt === null
       || finalWordCount === null
       || audioSeconds === null
       || requestCount === null
+      || finalWordCount < 0
+      || audioSeconds < 0
+      || requestCount < 0
+      || !this.isTrustedEndedAtValid(startedAt, endedAt, new Date())
     ) {
       return null;
     }
@@ -657,5 +677,34 @@ export class UsageService {
       audioSeconds,
       requestCount
     };
+  }
+
+  private assertNonNegativeTrustedMetric(value: number, message: string): void {
+    if (value < 0) {
+      throw new AppError(400, "invalid_trusted_result", message);
+    }
+  }
+
+  private assertTrustedEndedAtIsValid(startedAt: Date, endedAt: Date, now: Date): void {
+    if (endedAt.getTime() < startedAt.getTime()) {
+      throw new AppError(
+        400,
+        "invalid_trusted_result",
+        "Trusted result end time cannot be earlier than realtime session start."
+      );
+    }
+
+    if (endedAt.getTime() > now.getTime() + MAX_TRUSTED_RESULT_FUTURE_SKEW_MS) {
+      throw new AppError(
+        400,
+        "invalid_trusted_result",
+        "Trusted result end time cannot be materially in the future."
+      );
+    }
+  }
+
+  private isTrustedEndedAtValid(startedAt: Date, endedAt: Date, now: Date): boolean {
+    return endedAt.getTime() >= startedAt.getTime()
+      && endedAt.getTime() <= now.getTime() + MAX_TRUSTED_RESULT_FUTURE_SKEW_MS;
   }
 }

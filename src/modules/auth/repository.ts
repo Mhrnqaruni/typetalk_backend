@@ -3,6 +3,7 @@ import {
   ChallengePurpose,
   Prisma,
   PrismaClient,
+  type AuthRateLimitBucket,
   type Session
 } from "@prisma/client";
 
@@ -335,5 +336,51 @@ export class AuthRepository {
         revokedAt
       }
     });
+  }
+
+  async incrementAuthRateLimitBucket(
+    input: {
+      scope: string;
+      ipHash: string;
+      windowStart: Date;
+    },
+    transaction?: DbClient
+  ): Promise<AuthRateLimitBucket> {
+    const client = transaction ?? this.prisma;
+    const [bucket] = await client.$queryRaw<AuthRateLimitBucket[]>`
+      INSERT INTO "auth_rate_limit_buckets" (
+        "scope",
+        "ip_hash",
+        "window_start",
+        "hit_count",
+        "created_at",
+        "updated_at"
+      )
+      VALUES (
+        ${input.scope},
+        ${input.ipHash},
+        ${input.windowStart},
+        1,
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT ("scope", "ip_hash", "window_start")
+      DO UPDATE SET
+        "hit_count" = "auth_rate_limit_buckets"."hit_count" + 1,
+        "updated_at" = NOW()
+      RETURNING
+        "scope",
+        "ip_hash" AS "ipHash",
+        "window_start" AS "windowStart",
+        "hit_count" AS "hitCount",
+        "created_at" AS "createdAt",
+        "updated_at" AS "updatedAt"
+    `;
+
+    return bucket;
+  }
+
+  async resetAuthRateLimitBuckets(): Promise<void> {
+    await this.prisma.authRateLimitBucket.deleteMany();
   }
 }

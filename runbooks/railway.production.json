@@ -1,0 +1,14 @@
+{
+  "projectId": "b9c86099-ce7c-44e8-94eb-c3c569fe3eef",
+  "environments": {
+    "production": {
+      "volumeInstances": [
+        {
+          "serviceName": "Postgres",
+          "volumeName": "postgres-volume",
+          "volumeInstanceId": "3e3776eb-a7c2-4c69-9d27-0b4219721c16"
+        }
+      ]
+    }
+  }
+}

@@ -6,8 +6,9 @@ import { requireAuthContext } from "../../plugins/auth";
 import {
   billingInvoicesQuerySchema,
   checkoutSessionCreateSchema,
-  customerPortalCreateSchema,
-  googlePlaySubscriptionActionSchema
+  googlePlaySubscriptionActionSchema,
+  paddleCustomerPortalCreateSchema,
+  stripeCustomerPortalCreateSchema
 } from "./schemas";
 import { BillingService } from "./service";
 
@@ -43,12 +44,12 @@ export function buildBillingRoutes({
       return reply.send(result);
     });
 
-    app.post("/stripe/checkout-session", {
+    app.post("/paddle/checkout", {
       preHandler: [app.authenticate]
     }, async (request, reply) => {
       const context = requireAuthContext(request);
       const body = checkoutSessionCreateSchema.parse(request.body);
-      const result = await billingService.createCheckoutSession({
+      const result = await billingService.createPaddleCheckoutSession({
         userId: context.userId,
         organizationId: context.organizationId,
         email: context.user.primaryEmail,
@@ -62,12 +63,30 @@ export function buildBillingRoutes({
       return reply.status(result.statusCode).send(result.body);
     });
 
+    app.post("/stripe/checkout-session", {
+      preHandler: [app.authenticate]
+    }, async (_request, _reply) => {
+      billingService.rejectLegacyStripeCheckoutSession();
+    });
+
+    app.post("/paddle/customer-portal", {
+      preHandler: [app.authenticate]
+    }, async (request, reply) => {
+      const context = requireAuthContext(request);
+      paddleCustomerPortalCreateSchema.parse(request.body ?? {});
+      const result = await billingService.createPaddleCustomerPortalSession(
+        context.organizationId
+      );
+
+      return reply.send(result);
+    });
+
     app.post("/stripe/customer-portal", {
       preHandler: [app.authenticate]
     }, async (request, reply) => {
       const context = requireAuthContext(request);
-      const body = customerPortalCreateSchema.parse(request.body);
-      const result = await billingService.createCustomerPortalSession(
+      const body = stripeCustomerPortalCreateSchema.parse(request.body);
+      const result = await billingService.createStripeCustomerPortalSession(
         context.organizationId,
         body.return_url
       );
@@ -150,6 +169,25 @@ export function buildStripeWebhookRoutes({
       }
 
       const result = await billingService.receiveStripeWebhook(request.body, signature.trim());
+
+      return reply.status(result.statusCode).send(result.body);
+    });
+
+    app.post("/paddle", {
+      bodyLimit: config.maxWebhookBodyBytes
+    }, async (request, reply) => {
+      const signatureHeader = request.headers["paddle-signature"];
+      const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+
+      if (!signature || !signature.trim()) {
+        throw new AppError(400, "invalid_webhook_signature", "Webhook signature is invalid.");
+      }
+
+      if (!Buffer.isBuffer(request.body)) {
+        throw new AppError(400, "invalid_webhook_body", "Webhook body must be raw bytes.");
+      }
+
+      const result = await billingService.receivePaddleWebhook(request.body, signature.trim());
 
       return reply.status(result.statusCode).send(result.body);
     });

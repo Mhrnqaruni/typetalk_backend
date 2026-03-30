@@ -19,7 +19,12 @@ describe("stripe webhook processing", () => {
     await resetDatabase(harness.prisma);
     await seedPlans(harness.prisma);
     harness.emailProvider.sentOtps.length = 0;
-    harness.authRateLimiter.reset();
+    await harness.authRateLimiter.reset();
+    harness.paddleProvider.createdCustomers.length = 0;
+    harness.paddleProvider.checkoutSessions.length = 0;
+    harness.paddleProvider.portalSessions.length = 0;
+    harness.paddleProvider.invoicePages.clear();
+    harness.paddleProvider.webhookEvents.clear();
     harness.stripeProvider.createdCustomers.length = 0;
     harness.stripeProvider.checkoutSessions.length = 0;
     harness.stripeProvider.portalSessions.length = 0;
@@ -120,7 +125,7 @@ describe("stripe webhook processing", () => {
       organizationId: session.organization_id,
       customerId: "cus_webhook_1",
       subscriptionId: "sub_webhook_1",
-      priceId: config.stripePriceIdProMonthly,
+      priceId: config.stripePriceIdProMonthly!,
       status: "active"
     });
 
@@ -269,7 +274,11 @@ describe("stripe webhook processing", () => {
       }
     });
 
-    const retryResult = await runWebhookRetryJob(harness.prisma);
+    const retryResult = await runWebhookRetryJob(harness.prisma, {
+      paddleProvider: harness.paddleProvider,
+      stripeProvider: harness.stripeProvider,
+      googlePlayProvider: harness.googlePlayProvider
+    });
     const processedRow = await harness.prisma.webhookEvent.findUniqueOrThrow({
       where: {
         id: failedRow.id
@@ -299,7 +308,7 @@ describe("stripe webhook processing", () => {
       organizationId: firstSession.organization_id,
       customerId: "cus_received_1",
       subscriptionId: "sub_received_1",
-      priceId: config.stripePriceIdProMonthly,
+      priceId: config.stripePriceIdProMonthly!,
       status: "trialing",
       trialEndsAt: new Date("2026-04-25T04:00:00.000Z")
     });
@@ -308,7 +317,7 @@ describe("stripe webhook processing", () => {
       organizationId: secondSession.organization_id,
       customerId: "cus_stale_1",
       subscriptionId: "sub_stale_1",
-      priceId: config.stripePriceIdProYearly,
+      priceId: config.stripePriceIdProYearly!,
       status: "active"
     });
 
@@ -334,7 +343,11 @@ describe("stripe webhook processing", () => {
       }
     });
 
-    const retryResult = await runWebhookRetryJob(harness.prisma);
+    const retryResult = await runWebhookRetryJob(harness.prisma, {
+      paddleProvider: harness.paddleProvider,
+      stripeProvider: harness.stripeProvider,
+      googlePlayProvider: harness.googlePlayProvider
+    });
     const processedRows = await harness.prisma.webhookEvent.findMany({
       orderBy: {
         externalEventId: "asc"

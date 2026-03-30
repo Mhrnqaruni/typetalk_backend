@@ -18,7 +18,12 @@ describe("google play RTDN processing", () => {
     await resetDatabase(harness.prisma);
     await seedPlans(harness.prisma);
     harness.emailProvider.sentOtps.length = 0;
-    harness.authRateLimiter.reset();
+    await harness.authRateLimiter.reset();
+    harness.paddleProvider.createdCustomers.length = 0;
+    harness.paddleProvider.checkoutSessions.length = 0;
+    harness.paddleProvider.portalSessions.length = 0;
+    harness.paddleProvider.invoicePages.clear();
+    harness.paddleProvider.webhookEvents.clear();
     harness.stripeProvider.createdCustomers.length = 0;
     harness.stripeProvider.checkoutSessions.length = 0;
     harness.stripeProvider.portalSessions.length = 0;
@@ -511,6 +516,7 @@ describe("google play RTDN processing", () => {
     });
 
     const retryResult = await runWebhookRetryJob(harness.prisma, {
+      paddleProvider: harness.paddleProvider,
       stripeProvider: harness.stripeProvider,
       googlePlayProvider: harness.googlePlayProvider
     });
@@ -574,6 +580,7 @@ describe("google play RTDN processing", () => {
     });
 
     const retryResult = await runWebhookRetryJob(harness.prisma, {
+      paddleProvider: harness.paddleProvider,
       stripeProvider: harness.stripeProvider,
       googlePlayProvider: harness.googlePlayProvider
     });

@@ -66,6 +66,15 @@ export class BillingRepository {
     });
   }
 
+  async findPlanByPaddlePriceId(paddlePriceId: string, transaction?: DbClient) {
+    return this.getClient(transaction).plan.findFirst({
+      where: {
+        paddlePriceId,
+        isActive: true
+      }
+    });
+  }
+
   async findPlanByStripePriceId(stripePriceId: string, transaction?: DbClient) {
     return this.getClient(transaction).plan.findFirst({
       where: {
