@@ -31,9 +31,10 @@ describe("email auth flows", () => {
     });
 
     expect(requestResponse.statusCode).toBe(202);
+    const firstCode = harness.emailProvider.latestCodeFor("test@example.com");
+    expect(requestResponse.headers["x-typetalk-debug-otp-code"]).toBe(firstCode);
     expect(harness.emailProvider.sentOtps).toHaveLength(1);
 
-    const firstCode = harness.emailProvider.latestCodeFor("test@example.com");
     const firstChallenge = await harness.prisma.emailChallenge.findFirstOrThrow({
       where: {
         email: "test@example.com"

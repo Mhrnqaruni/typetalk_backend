@@ -42,6 +42,10 @@ export interface AuthContext {
   };
 }
 
+export interface OtpRequestResult {
+  debugOtpCode: string | null;
+}
+
 export class AuthService {
   private readonly config: AppConfig;
   private readonly inFlightRefreshes = new Set<string>();
@@ -62,7 +66,7 @@ export class AuthService {
   async requestEmailCode(
     input: { email: string; purpose?: ChallengePurpose },
     metadata: RequestMetadata
-  ): Promise<void> {
+  ): Promise<OtpRequestResult> {
     const email = normalizeEmail(input.email);
     const purpose = input.purpose ?? ChallengePurpose.SIGN_IN;
     const otpCode = await this.issueEmailChallenge(email, purpose, metadata);
@@ -71,13 +75,17 @@ export class AuthService {
       code: otpCode,
       purpose
     });
+
+    return {
+      debugOtpCode: this.resolveDebugOtpCode(otpCode)
+    };
   }
 
   async resendEmailCode(
     input: { email: string; purpose?: ChallengePurpose },
     metadata: RequestMetadata
-  ): Promise<void> {
-    await this.requestEmailCode(input, metadata);
+  ): Promise<OtpRequestResult> {
+    return this.requestEmailCode(input, metadata);
   }
 
   async verifyEmailCode(
@@ -712,6 +720,12 @@ export class AuthService {
   private isRetryableChallengeConflict(error: unknown): boolean {
     return error instanceof Prisma.PrismaClientKnownRequestError
       && (error.code === "P2002" || error.code === "P2034");
+  }
+
+  private resolveDebugOtpCode(otpCode: string): string | null {
+    return this.config.appEnv !== "production" && this.config.emailProviderMode === "log"
+      ? otpCode
+      : null;
   }
 
   private async resolveRefreshMismatch(

@@ -173,6 +173,7 @@ export async function buildApp(
 
   await app.register(cors, {
     credentials: true,
+    exposedHeaders: ["x-typetalk-debug-otp-code"],
     origin(origin, callback) {
       callback(null, !origin || config.allowedOrigins.includes(origin));
     }

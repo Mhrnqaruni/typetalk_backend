@@ -29,6 +29,7 @@ export function buildWebAuthRoutes({
 }: WebAuthRoutesDependencies): FastifyPluginAsync {
   return async (app) => {
     const config = getConfig();
+    const debugOtpHeaderName = "x-typetalk-debug-otp-code";
 
     app.post("/email/request-code", {
       preHandler: async (request) => {
@@ -36,7 +37,11 @@ export function buildWebAuthRoutes({
       }
     }, async (request, reply) => {
       const body = requestEmailCodeSchema.parse(request.body);
-      await authService.requestEmailCode(body, getRequestMetadata(request));
+      const result = await authService.requestEmailCode(body, getRequestMetadata(request));
+
+      if (result.debugOtpCode) {
+        reply.header(debugOtpHeaderName, result.debugOtpCode);
+      }
 
       return reply.status(202).send({
         status: "accepted"
@@ -49,7 +54,11 @@ export function buildWebAuthRoutes({
       }
     }, async (request, reply) => {
       const body = requestEmailCodeSchema.parse(request.body);
-      await authService.resendEmailCode(body, getRequestMetadata(request));
+      const result = await authService.resendEmailCode(body, getRequestMetadata(request));
+
+      if (result.debugOtpCode) {
+        reply.header(debugOtpHeaderName, result.debugOtpCode);
+      }
 
       return reply.status(202).send({
         status: "accepted"

@@ -199,6 +199,8 @@ Preview policy:
 - Do not add wildcard preview origins such as `https://*.vercel.app` to production.
 - If frontend preview browser testing needs a live backend, point the preview deployment at an explicit staging backend instead of widening production CORS.
 - Local development keeps its own `.env.local` allowlist and does not change the production or staging contract.
+- Preview-domain rehearsal remains cross-site when it uses `*.vercel.app` against `*.up.railway.app`, so it can prove request, verify, and logout behavior but it cannot prove `SameSite=Lax` refresh-cookie persistence across reloads.
+- Cookie-persistence proof requires same-site frontend and backend domains such as `typetalk.app` plus `api.typetalk.app` or a staging pair under the same registrable domain.
 
 ## First Deploy Order
 

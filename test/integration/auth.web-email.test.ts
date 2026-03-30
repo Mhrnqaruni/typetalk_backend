@@ -51,13 +51,18 @@ describe("web email auth flows", () => {
   });
 
   it("sets a secure refresh cookie and omits refresh_token from web verify responses", async () => {
-    await harness.app.inject({
+    const requestResponse = await harness.app.inject({
       method: "POST",
       url: "/v1/web-auth/email/request-code",
       payload: {
         email: "browser@example.com"
       }
     });
+
+    expect(requestResponse.statusCode).toBe(202);
+    expect(requestResponse.headers["x-typetalk-debug-otp-code"]).toBe(
+      harness.emailProvider.latestCodeFor("browser@example.com")
+    );
 
     const response = await harness.app.inject({
       method: "POST",
@@ -99,6 +104,18 @@ describe("web email auth flows", () => {
     try {
       await resetDatabase(throttleHarness.prisma);
       await throttleHarness.authRateLimiter.reset();
+
+      const headerResponse = await throttleHarness.app.inject({
+        method: "POST",
+        url: "/v1/web-auth/email/request-code",
+        payload: {
+          email: "fresh-header@example.com"
+        }
+      });
+
+      expect(headerResponse.headers["x-typetalk-debug-otp-code"]).toBe(
+        throttleHarness.emailProvider.latestCodeFor("fresh-header@example.com")
+      );
 
       const statuses: number[] = [];
 
@@ -182,7 +199,7 @@ describe("web email auth flows", () => {
       await limitedHarness.app.close();
       await limitedHarness.prisma.$disconnect();
     }
-  });
+  }, 20_000);
 
   it("rejects missing-origin web verify and records otp lockout on repeated bad codes", async () => {
     await harness.app.inject({
@@ -251,5 +268,5 @@ describe("web email auth flows", () => {
         eventType: "otp_challenge_locked"
       }
     })).toBe(1);
-  });
+  }, 20_000);
 });

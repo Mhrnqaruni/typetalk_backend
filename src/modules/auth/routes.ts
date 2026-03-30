@@ -23,13 +23,19 @@ export function buildAuthRoutes({
   authRateLimiter
 }: AuthRoutesDependencies): FastifyPluginAsync {
   return async (app) => {
+    const debugOtpHeaderName = "x-typetalk-debug-otp-code";
+
     app.post("/email/request-code", {
       preHandler: async (request) => {
         await authRateLimiter.assertCanRequestCode(getRequestMetadata(request));
       }
     }, async (request, reply) => {
       const body = requestEmailCodeSchema.parse(request.body);
-      await authService.requestEmailCode(body, getRequestMetadata(request));
+      const result = await authService.requestEmailCode(body, getRequestMetadata(request));
+
+      if (result.debugOtpCode) {
+        reply.header(debugOtpHeaderName, result.debugOtpCode);
+      }
 
       return reply.status(202).send({
         status: "accepted"
@@ -42,7 +48,11 @@ export function buildAuthRoutes({
       }
     }, async (request, reply) => {
       const body = requestEmailCodeSchema.parse(request.body);
-      await authService.resendEmailCode(body, getRequestMetadata(request));
+      const result = await authService.resendEmailCode(body, getRequestMetadata(request));
+
+      if (result.debugOtpCode) {
+        reply.header(debugOtpHeaderName, result.debugOtpCode);
+      }
 
       return reply.status(202).send({
         status: "accepted"
