@@ -1,5 +1,12 @@
 ## Phase 9 — Execution Report
 
+### Fixes Applied — Review Round 3
+
+- Issue: the inspector reported that the approved deployed end-state is still not achieved because the only real browser proof is a cross-site preview frontend talking to a staging backend. Confirmed: `Resolve-DnsName typetalk.app` and `Resolve-DnsName api.typetalk.app` still fail, and the deployed smoke still has to expect reload to return to `/login` under the locked `SameSite=Lax` policy. What I fixed: there is no repo-side code change that can mint the missing same-site domains from this workspace, so I kept Phase 9 explicitly incomplete, but I added a checked-in rehearsal helper so the current cross-site preview-to-staging proof is reproducible without ad hoc shell setup. How I verified: `npm run test:e2e:deployed:phase9` now passes `3/3` with the checked-in defaults, and the live reload case still proves the current result is `login`, not persistence.
+- Issue: the inspector reported that real browser Google sign-in is still unprovisioned. Confirmed: Railway production and staging still have `GOOGLE_WEB_CLIENT_ID=replace_me`, and Vercel production still has `VITE_GOOGLE_CLIENT_ID="replace_me"`. What I fixed: there is no repo-side code change that can provision the missing Google web OAuth client, so I kept the fail-closed placeholder behavior and the phase-complete criteria unchanged. How I verified: `railway variables --json -e production -s melodious-presence`, `railway variables --json -e staging -s melodious-presence`, pulled Vercel production env, and the deployed smoke helper all still show placeholder-only Google state.
+- Issue: the inspector reported that the verified Phase 9 repo-side fixes were still only in a dirty working tree and not checkpointed in GitHub. Confirmed at the start of this round: backend `HEAD` and `origin/master` were both still `4907f577d78fec60dd3acab89d99fcc5f4b6aa7b`. What I fixed: committed and pushed the verified backend changes as `d1d001e2f5a5e7444e09c708bd55a622abaaef29` (`Phase 9 browser auth rehearsal fixes`) and the verified frontend changes as `7f9f8bbcd73498f1d14d59e7817d4c2ad3f880a3` (`Phase 9 web auth app shell`). How I verified: `git rev-parse HEAD` and `git rev-parse origin/master` now match in both repos.
+- Issue: the inspector reported that the deployed smoke command was not reproducible as written because `npm run test:e2e:deployed` silently skipped everything unless `PLAYWRIGHT_DEPLOYED_*` variables were exported first. Confirmed. What I fixed: added `../frontend/scripts/run-phase9-deployed-smoke.mjs`, added the checked-in command `npm run test:e2e:deployed:phase9`, and documented that command in `../frontend/deploy.md`. How I verified: the first Windows run exposed a real `spawnSync npx.cmd EINVAL` bug, I fixed the helper to launch through `cmd.exe`, read the script back, and then `npm run test:e2e:deployed:phase9` passed `3/3`.
+
 ### Fixes Applied — Review Round 2
 
 - Issue: the inspector reported that the full backend verification matrix was no longer green and that the report was overstating the current local state. Current verification: that failure does not reproduce on the current workspace. The repo-side Phase 9 auth and test fixes already present in `src/app.ts`, `src/modules/auth/routes.ts`, `src/modules/auth/service.ts`, `src/modules/auth/web-routes.ts`, `test/integration/auth.email.test.ts`, and `test/integration/auth.web-email.test.ts` now rerun cleanly. What I fixed: no new backend application-code change was required in this review round because the current workspace already contains the repaired Phase 9 auth and test code; I reran the full backend matrix and refreshed this report to match the real result. How I verified: `npx prisma validate` passed, backend `npm run build` passed, and backend `npm run test` passed with `26/26` files and `110/110` tests.
@@ -16,9 +23,9 @@
 
 ### Summary
 
-Phase 9 delivered the browser-auth code path for TypeTalk and the current local matrix is green again end to end. The backend exposes dedicated `/v1/web-auth/*` routes, the frontend has `/login` plus protected `/app/*` routes and auth bootstrap, and the review-round rehearsal path now includes a stricter non-mocked deployed smoke that asserts the live backend host, CORS headers, and debug OTP header for the reachable preview-to-staging pair. The current verification matrix passes: backend `npx prisma validate`, backend `npm run build`, backend `npm run test` (`26/26` files, `110/110` tests), frontend `npm run build`, frontend `npm run test` (`5/5` files, `11/11` tests), frontend `npm run test:e2e` (`2 passed`, `4 skipped`), and frontend `npm run test:e2e:deployed` (`3/3`).
+Phase 9 delivered the browser-auth code path for TypeTalk and the current local matrix is green again end to end. The backend exposes dedicated `/v1/web-auth/*` routes, the frontend has `/login` plus protected `/app/*` routes and auth bootstrap, and the review-round rehearsal path now includes a stricter non-mocked deployed smoke plus a checked-in helper command that asserts the live backend host, CORS headers, and debug OTP header for the reachable preview-to-staging pair. The current verification matrix passes: backend `npx prisma validate`, backend `npm run build`, backend `npm run test` (`26/26` files, `110/110` tests), frontend `npm run build`, frontend `npm run test` (`5/5` files, `11/11` tests), frontend `npm run test:e2e` (`2 passed`, `4 skipped`), and frontend `npm run test:e2e:deployed:phase9` (`3/3`).
 
-The phase is still not complete. The reachable rehearsal domains are currently `project-y32ng.vercel.app` and `melodious-presence-staging.up.railway.app`, which are cross-site, so they can prove redirect, OTP login, logout, and the staging CORS contract, but they still cannot prove `SameSite=Lax` refresh-cookie persistence on reload; the real deployed smoke therefore still expects reload to return to `/login`. Real browser Google sign-in also remains blocked because Railway production and staging still have `GOOGLE_WEB_CLIENT_ID=replace_me`, and Vercel production still has `VITE_GOOGLE_CLIENT_ID=\"replace_me\"`.
+The phase is still not complete. The reachable rehearsal domains are currently `project-y32ng.vercel.app` and `melodious-presence-staging.up.railway.app`, which are cross-site, so they can prove redirect, OTP login, logout, and the staging CORS contract, but they still cannot prove `SameSite=Lax` refresh-cookie persistence on reload; the reproducible deployed smoke therefore still has to expect reload to return to `/login`. Real browser Google sign-in also remains blocked because Railway production and staging still have `GOOGLE_WEB_CLIENT_ID=replace_me`, and Vercel production still has `VITE_GOOGLE_CLIENT_ID=\"replace_me\"`. The verified backend and frontend source changes are now checkpointed in GitHub at backend `d1d001e2f5a5e7444e09c708bd55a622abaaef29` and frontend `7f9f8bbcd73498f1d14d59e7817d4c2ad3f880a3`.
 
 ### Step-by-Step Execution Log
 
@@ -127,7 +134,7 @@ The phase is still not complete. The reachable rehearsal domains are currently `
   - Status: DONE
 
 - Step 10: Add mandatory frontend auth test tooling
-  - Action taken: Added Vitest plus Playwright tooling for frontend auth, kept the mocked local smoke for fast regression coverage, and during review upgraded `tests/auth.deployed.spec.js` into a real deployed smoke that hits the live backend. In Review Round 2 I tightened that deployed smoke further so it now asserts the live backend host, `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`, and the non-production debug OTP header instead of only exercising the happy path.
+  - Action taken: Added Vitest plus Playwright tooling for frontend auth, kept the mocked local smoke for fast regression coverage, and during review upgraded `tests/auth.deployed.spec.js` into a real deployed smoke that hits the live backend. In Review Round 2 I tightened that deployed smoke further so it now asserts the live backend host, `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`, and the non-production debug OTP header instead of only exercising the happy path. In Review Round 3 I added a checked-in helper command so the deployed rehearsal can be rerun without manual `PLAYWRIGHT_DEPLOYED_*` exports.
   - Files modified:
     - `C:\Users\User\Desktop\voice to clip\TypeTalk\frontend\package.json` — frontend test scripts.
     - `C:\Users\User\Desktop\voice to clip\TypeTalk\frontend\package-lock.json` — updated lockfile.
@@ -139,13 +146,15 @@ The phase is still not complete. The reachable rehearsal domains are currently `
     - `C:\Users\User\Desktop\voice to clip\TypeTalk\frontend\src\lib\auth.test.js` — credentialed browser-auth request tests.
     - `C:\Users\User\Desktop\voice to clip\TypeTalk\frontend\src\lib\google.test.js` — placeholder Google handling tests.
     - `C:\Users\User\Desktop\voice to clip\TypeTalk\frontend\playwright.config.js` — deployed smoke config.
+    - `C:\Users\User\Desktop\voice to clip\TypeTalk\frontend\scripts\run-phase9-deployed-smoke.mjs` — checked-in Phase 9 deployed-smoke helper with default rehearsal env.
     - `C:\Users\User\Desktop\voice to clip\TypeTalk\frontend\tests\auth.smoke.spec.js` — fast mocked regression smoke.
     - `C:\Users\User\Desktop\voice to clip\TypeTalk\frontend\tests\auth.deployed.spec.js` — real deployed rehearsal smoke.
-  - Verification: Frontend `npm run test` passed `5/5` files and `11/11` tests, frontend `npm run test:e2e` passed with `2 passed` and `4 skipped`, and frontend `npm run test:e2e:deployed` passed `3/3` against the real deployed staging pair using no auth-route stubs while asserting the live staging backend and CORS headers.
+    - `C:\Users\User\Desktop\voice to clip\TypeTalk\frontend\deploy.md` — documents the checked-in rehearsal command.
+  - Verification: Frontend `npm run test` passed `5/5` files and `11/11` tests, frontend `npm run test:e2e` passed with `2 passed` and `4 skipped`, and the new checked-in helper `npm run test:e2e:deployed:phase9` passed `3/3` against the real deployed staging pair using no auth-route stubs while asserting the live staging backend and CORS headers.
   - Status: DONE_WITH_DEVIATION
 
 - Step 11: Run full Phase 9 verification against local and deployed environments
-  - Action taken: Reran the backend matrix, reran the frontend build, unit, and Playwright suites, executed the stricter real deployed smoke against the reachable rehearsal origin, refreshed Railway staging and production origin evidence, inspected the live Vercel rehearsal deployment, and refreshed the Railway and Vercel env evidence instead of relying on the old optimistic report.
+  - Action taken: Reran the backend matrix, reran the frontend build, unit, and Playwright suites, executed the stricter real deployed smoke against the reachable rehearsal origin, added the checked-in deployed-smoke helper, refreshed Railway staging and production origin evidence, inspected the live Vercel rehearsal deployment, refreshed the Railway and Vercel env evidence, and then checkpointed the verified backend and frontend changes to GitHub.
   - Files modified:
     - `C:\Users\User\Desktop\voice to clip\TypeTalk\backend\phase_9\exec_report.md` — rewritten to match the real Round 1 state.
   - Verification:
@@ -155,7 +164,7 @@ The phase is still not complete. The reachable rehearsal domains are currently `
     - Frontend `npm run build` passed.
     - Frontend `npm run test` passed with `5/5` files and `11/11` tests.
     - Frontend `npm run test:e2e` passed with `2 passed` and `4 skipped`.
-    - Real deployed smoke passed `3/3` with `PLAYWRIGHT_DEPLOYED_EXPECT_RELOAD_RESULT=login`, `PLAYWRIGHT_DEPLOYED_EXPECT_API_HOST=melodious-presence-staging.up.railway.app`, `PLAYWRIGHT_DEPLOYED_EXPECT_ALLOW_ORIGIN=https://project-y32ng.vercel.app`, and `PLAYWRIGHT_DEPLOYED_REQUIRE_DEBUG_OTP_HEADER=1`.
+    - The checked-in helper `npm run test:e2e:deployed:phase9` passed `3/3` with `PLAYWRIGHT_DEPLOYED_EXPECT_RELOAD_RESULT=login`, `PLAYWRIGHT_DEPLOYED_EXPECT_API_HOST=melodious-presence-staging.up.railway.app`, `PLAYWRIGHT_DEPLOYED_EXPECT_ALLOW_ORIGIN=https://project-y32ng.vercel.app`, and `PLAYWRIGHT_DEPLOYED_REQUIRE_DEBUG_OTP_HEADER=1`.
     - `vercel inspect project-y32ng.vercel.app` reports the reachable rehearsal deployment as `target preview`.
     - The reachable rehearsal bundle contains `https://melodious-presence-staging.up.railway.app`, not the Railway production URL.
     - `curl.exe -i -X POST https://melodious-presence-staging.up.railway.app/v1/web-auth/refresh -H "Origin: https://project-y32ng.vercel.app"` returned `401` with the expected credential CORS headers.
@@ -164,6 +173,8 @@ The phase is still not complete. The reachable rehearsal domains are currently `
     - Railway production still reports `GOOGLE_WEB_CLIENT_ID=replace_me`.
     - Railway staging still reports `GOOGLE_WEB_CLIENT_ID=replace_me`.
     - Pulled Vercel production env still reports `VITE_API_BASE_URL=https://melodious-presence-production-2a7d.up.railway.app` and `VITE_GOOGLE_CLIENT_ID=replace_me`.
+    - Backend `git rev-parse HEAD` and `git rev-parse origin/master` now both resolve `d1d001e2f5a5e7444e09c708bd55a622abaaef29`.
+    - Frontend `git rev-parse HEAD` and `git rev-parse origin/master` now both resolve `7f9f8bbcd73498f1d14d59e7817d4c2ad3f880a3`.
   - Status: DONE_WITH_DEVIATION
 
 ### Testing Results
@@ -225,10 +236,13 @@ ok 2 tests\auth.smoke.spec.js:116:1 › completes otp login, survives reload boo
 ```
 
 ```text
-frontend> npm run test:e2e:deployed
-env:
+frontend> npm run test:e2e:deployed:phase9
+> typeless-frontend@0.0.0 test:e2e:deployed:phase9
+> node scripts/run-phase9-deployed-smoke.mjs
+
+Phase 9 deployed smoke defaults:
   PLAYWRIGHT_DEPLOYED_BASE_URL=https://project-y32ng.vercel.app
-  PLAYWRIGHT_DEPLOYED_EMAIL=phase9-round2-{scenario}-1774880600@example.com
+  PLAYWRIGHT_DEPLOYED_EMAIL=phase9-round3-{scenario}-1774881483190@example.com
   PLAYWRIGHT_DEPLOYED_EXPECT_RELOAD_RESULT=login
   PLAYWRIGHT_DEPLOYED_EXPECT_GOOGLE_PLACEHOLDER=1
   PLAYWRIGHT_DEPLOYED_EXPECT_API_HOST=melodious-presence-staging.up.railway.app
