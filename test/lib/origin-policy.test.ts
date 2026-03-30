@@ -19,6 +19,8 @@ const defaultEnvValues = {
   APP_ENCRYPTION_KEY: "prod_app_encryption_key",
   IP_HASH_KEY_V1: "prod_ip_hash_key",
   GOOGLE_CLIENT_ID: "prod-google-client-id",
+  GOOGLE_WEB_CLIENT_ID: "prod-google-web-client-id",
+  WEB_AUTH_REFRESH_COOKIE_NAME: "typetalk_refresh",
   PADDLE_API_KEY: "pdl_test_typetalk_prod",
   PADDLE_WEBHOOK_SECRET: "pdlwhsec_typetalk_prod",
   PADDLE_PRICE_ID_PRO_MONTHLY: "pri_paddle_monthly_prod",
@@ -87,7 +89,7 @@ function createEnvFile(overrides: Record<string, string>) {
 async function sendOriginRequest(
   url: string,
   origin: string
-): Promise<{ statusCode: number; allowOrigin: string | null }> {
+): Promise<{ statusCode: number; allowOrigin: string | null; allowCredentials: string | null }> {
   const response = await fetch(url, {
     headers: {
       origin
@@ -96,7 +98,8 @@ async function sendOriginRequest(
 
   return {
     statusCode: response.status,
-    allowOrigin: response.headers.get("access-control-allow-origin")
+    allowOrigin: response.headers.get("access-control-allow-origin"),
+    allowCredentials: response.headers.get("access-control-allow-credentials")
   };
 }
 
@@ -143,8 +146,10 @@ describe("production origin policy", () => {
 
         expect(allowedResponse.statusCode).toBe(200);
         expect(allowedResponse.allowOrigin).toBe("https://typetalk.app");
+        expect(allowedResponse.allowCredentials).toBe("true");
         expect(blockedResponse.statusCode).toBe(403);
         expect(blockedResponse.allowOrigin).toBeNull();
+        expect(blockedResponse.allowCredentials).toBeNull();
       } finally {
         await app.close();
       }
@@ -187,8 +192,10 @@ describe("production origin policy", () => {
 
         expect(stagingResponse.statusCode).toBe(200);
         expect(stagingResponse.allowOrigin).toBe("https://staging.typetalk.app");
+        expect(stagingResponse.allowCredentials).toBe("true");
         expect(previewResponse.statusCode).toBe(403);
         expect(previewResponse.allowOrigin).toBeNull();
+        expect(previewResponse.allowCredentials).toBeNull();
       } finally {
         await app.close();
       }

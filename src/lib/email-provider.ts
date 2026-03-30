@@ -68,8 +68,12 @@ export function createEmailProvider(config: AppConfig): EmailProvider {
     return new LoggingEmailProvider();
   }
 
-  if (config.emailProviderMode !== "resend") {
-    throw new Error("A real email provider must be configured for non-test runtimes.");
+  if (config.emailProviderMode === "log") {
+    if (config.appEnv === "production") {
+      throw new Error("A real email provider must be configured for production runtimes.");
+    }
+
+    return new LoggingEmailProvider();
   }
 
   return new ResendEmailProvider({

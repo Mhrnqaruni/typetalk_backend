@@ -28,3 +28,5 @@ export const linkGoogleSchema = z.object({
 export const refreshSchema = z.object({
   refresh_token: z.string().min(1)
 }).strict();
+
+export const emptyPayloadSchema = z.object({}).strict();

@@ -1,5 +1,6 @@
 import type { Writable } from "node:stream";
 
+import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -18,6 +19,7 @@ import { GoogleIdTokenVerifier, type GoogleVerifier } from "./modules/auth/googl
 import { createAuthRateLimiter, type AuthRateLimiter } from "./modules/auth/rate-limiter";
 import { AuthRepository } from "./modules/auth/repository";
 import { AuthService } from "./modules/auth/service";
+import { buildWebAuthRoutes } from "./modules/auth/web-routes";
 import { buildBillingRoutes, buildStripeWebhookRoutes } from "./modules/billing/routes";
 import { LiveGooglePlayProvider } from "./modules/billing/google-play";
 import { LivePaddleProvider } from "./modules/billing/paddle";
@@ -65,7 +67,10 @@ export async function buildApp(
   const config = getConfig();
   const prisma = options.prisma ?? getPrismaClient();
   const emailProvider = options.emailProvider ?? createEmailProvider(config);
-  const googleVerifier = options.googleVerifier ?? new GoogleIdTokenVerifier(config.googleClientId);
+  const googleVerifier = options.googleVerifier ?? new GoogleIdTokenVerifier({
+    native: config.googleClientId,
+    web: config.googleWebClientId
+  });
   const paddleProvider = options.paddleProvider
     ?? new LivePaddleProvider(config.paddleApiKey, config.paddleWebhookSecret);
   const stripeProvider = options.stripeProvider
@@ -164,7 +169,10 @@ export async function buildApp(
     }
   });
 
+  await app.register(cookie);
+
   await app.register(cors, {
+    credentials: true,
     origin(origin, callback) {
       callback(null, !origin || config.allowedOrigins.includes(origin));
     }
@@ -245,6 +253,9 @@ export async function buildApp(
   await app.register(buildHealthRoutes({ prisma }));
   await app.register(buildAuthRoutes({ authService, authRateLimiter }), {
     prefix: "/v1/auth"
+  });
+  await app.register(buildWebAuthRoutes({ authService, authRateLimiter }), {
+    prefix: "/v1/web-auth"
   });
   await app.register(buildDeviceRoutes({ deviceService }), {
     prefix: "/v1/devices"

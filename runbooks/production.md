@@ -22,6 +22,31 @@
 - Live Paddle merchant activation is deferred and is not a Phase 8 completion requirement.
 - Public deployment proof must come from Railway and Vercel reality, not only local builds.
 
+## Phase 9 Browser Auth Contract
+
+Frozen browser-auth rules for the authenticated web app:
+
+- Public marketing routes remain public.
+- `/login` is the browser sign-in entry.
+- `/app/*` is the protected authenticated SPA namespace.
+- Backend browser auth uses dedicated cookie-aware routes only:
+  - `POST /v1/web-auth/email/request-code`
+  - `POST /v1/web-auth/email/resend-code`
+  - `POST /v1/web-auth/email/verify-code`
+  - `POST /v1/web-auth/google`
+  - `POST /v1/web-auth/refresh`
+  - `POST /v1/web-auth/logout`
+- Native `/v1/auth/*` routes stay backward compatible for Android and Windows and are not repurposed for browser cookies.
+- The browser refresh token lives only in an `HttpOnly` cookie set by the backend origin.
+- The browser access token lives only in frontend memory and must not be persisted to `localStorage` or `sessionStorage`.
+- Cookie-bearing browser-auth routes stay `POST` only and require an allowed `Origin` or `Referer`.
+- The browser refresh cookie policy is locked to:
+  - host-only on the backend origin
+  - `HttpOnly`
+  - `Secure`
+  - `Path=/`
+  - `SameSite=Lax`
+
 ## Current Operational State At Phase 8 Start
 
 - Railway CLI resolves:

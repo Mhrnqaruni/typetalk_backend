@@ -16,7 +16,7 @@ import type { DeviceInput } from "../devices/schemas";
 import { OrganizationService } from "../organizations/service";
 import { SecurityService } from "../security/service";
 import { UserService } from "../users/service";
-import { type GoogleVerifier } from "./google";
+import { type GoogleTokenAudience, type GoogleVerifier } from "./google";
 import { createOtpChallenge } from "./otp";
 import { AuthRepository } from "./repository";
 
@@ -220,10 +220,14 @@ export class AuthService {
     input: {
       idToken: string;
       device?: DeviceInput;
+      audience?: GoogleTokenAudience;
     },
     metadata: RequestMetadata
   ) {
-    const googleProfile = await this.googleVerifier.verifyIdToken(input.idToken);
+    const googleProfile = await this.googleVerifier.verifyIdToken(
+      input.idToken,
+      input.audience ?? "native"
+    );
 
     if (!googleProfile.emailVerified) {
       throw new AppError(401, "google_email_unverified", "Google email must be verified.");
@@ -463,6 +467,29 @@ export class AuthService {
 
   async revokeSession(sessionId: string) {
     await this.repository.revokeSession(sessionId, new Date());
+  }
+
+  async revokeSessionByRefreshToken(refreshToken: string): Promise<boolean> {
+    const parsedToken = parseRefreshToken(refreshToken);
+
+    if (!parsedToken) {
+      return false;
+    }
+
+    const session = await this.repository.findSessionById(parsedToken.sessionId);
+
+    if (!session || session.revokedAt) {
+      return false;
+    }
+
+    const submittedHash = hashRefreshSecret(parsedToken.secret, this.config.jwtRefreshSecret);
+
+    if (!hashesMatch(submittedHash, session.refreshTokenHash)) {
+      return false;
+    }
+
+    await this.repository.revokeSession(session.id, new Date());
+    return true;
   }
 
   async revokeAllSessionsForUser(userId: string) {

@@ -17,6 +17,8 @@ const envSchema = z.object({
   APP_ENCRYPTION_KEY: z.string().min(1, "APP_ENCRYPTION_KEY is required"),
   IP_HASH_KEY_V1: z.string().min(1, "IP_HASH_KEY_V1 is required"),
   GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required"),
+  GOOGLE_WEB_CLIENT_ID: z.string().min(1, "GOOGLE_WEB_CLIENT_ID is required"),
+  WEB_AUTH_REFRESH_COOKIE_NAME: z.string().min(1).default("typetalk_refresh"),
   PADDLE_API_KEY: z.string().min(1, "PADDLE_API_KEY is required"),
   PADDLE_WEBHOOK_SECRET: z.string().min(1, "PADDLE_WEBHOOK_SECRET is required"),
   PADDLE_PRICE_ID_PRO_MONTHLY: z.string().min(1, "PADDLE_PRICE_ID_PRO_MONTHLY is required"),
@@ -106,6 +108,8 @@ function loadEnvironment(): AppConfig {
     appEncryptionKey: parsed.data.APP_ENCRYPTION_KEY,
     ipHashKeyV1: parsed.data.IP_HASH_KEY_V1,
     googleClientId: parsed.data.GOOGLE_CLIENT_ID,
+    googleWebClientId: parsed.data.GOOGLE_WEB_CLIENT_ID,
+    webAuthRefreshCookieName: parsed.data.WEB_AUTH_REFRESH_COOKIE_NAME,
     paddleApiKey: parsed.data.PADDLE_API_KEY,
     paddleWebhookSecret: parsed.data.PADDLE_WEBHOOK_SECRET,
     paddlePriceIdProMonthly: parsed.data.PADDLE_PRICE_ID_PRO_MONTHLY,
@@ -163,6 +167,8 @@ export interface AppConfig {
   appEncryptionKey: string;
   ipHashKeyV1: string;
   googleClientId: string;
+  googleWebClientId: string;
+  webAuthRefreshCookieName: string;
   paddleApiKey: string;
   paddleWebhookSecret: string;
   paddlePriceIdProMonthly: string;

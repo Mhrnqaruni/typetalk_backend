@@ -2,6 +2,8 @@ import { OAuth2Client } from "google-auth-library";
 
 import { AppError } from "../../lib/app-error";
 
+export type GoogleTokenAudience = "native" | "web";
+
 export interface GoogleIdentityProfile {
   sub: string;
   email: string;
@@ -11,20 +13,29 @@ export interface GoogleIdentityProfile {
 }
 
 export interface GoogleVerifier {
-  verifyIdToken(idToken: string): Promise<GoogleIdentityProfile>;
+  verifyIdToken(idToken: string, audience?: GoogleTokenAudience): Promise<GoogleIdentityProfile>;
 }
 
 export class GoogleIdTokenVerifier implements GoogleVerifier {
-  private readonly client: OAuth2Client;
+  private readonly clients: Record<GoogleTokenAudience, OAuth2Client>;
 
-  constructor(private readonly clientId: string) {
-    this.client = new OAuth2Client(clientId);
+  constructor(
+    private readonly clientIds: Record<GoogleTokenAudience, string>
+  ) {
+    this.clients = {
+      native: new OAuth2Client(clientIds.native),
+      web: new OAuth2Client(clientIds.web)
+    };
   }
 
-  async verifyIdToken(idToken: string): Promise<GoogleIdentityProfile> {
-    const ticket = await this.client.verifyIdToken({
+  async verifyIdToken(
+    idToken: string,
+    audience: GoogleTokenAudience = "native"
+  ): Promise<GoogleIdentityProfile> {
+    const clientId = this.clientIds[audience];
+    const ticket = await this.clients[audience].verifyIdToken({
       idToken,
-      audience: this.clientId
+      audience: clientId
     });
     const payload = ticket.getPayload();
 

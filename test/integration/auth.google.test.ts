@@ -28,7 +28,7 @@ describe("google auth flows", () => {
       emailVerified: true,
       name: "Google User",
       picture: "https://example.com/avatar.png"
-    });
+    }, "native");
 
     const response = await harness.app.inject({
       method: "POST",
@@ -75,7 +75,7 @@ describe("google auth flows", () => {
       emailVerified: true,
       name: "Merge Risk",
       picture: null
-    });
+    }, "native");
 
     const response = await harness.app.inject({
       method: "POST",
@@ -113,7 +113,7 @@ describe("google auth flows", () => {
       emailVerified: true,
       name: "Linked User",
       picture: null
-    });
+    }, "native");
 
     const freshLinkResponse = await harness.app.inject({
       method: "POST",
@@ -143,7 +143,7 @@ describe("google auth flows", () => {
       emailVerified: true,
       name: "Stale Link",
       picture: null
-    });
+    }, "native");
 
     const staleLinkResponse = await harness.app.inject({
       method: "POST",
@@ -167,7 +167,7 @@ describe("google auth flows", () => {
       emailVerified: true,
       name: "Device Cap User",
       picture: null
-    });
+    }, "native");
 
     const seedLogin = await harness.app.inject({
       method: "POST",

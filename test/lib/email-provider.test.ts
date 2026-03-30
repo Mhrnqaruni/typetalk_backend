@@ -18,6 +18,8 @@ function createConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     appEncryptionKey: "app-key",
     ipHashKeyV1: "ip-key",
     googleClientId: "google-client-id",
+    googleWebClientId: "google-web-client-id",
+    webAuthRefreshCookieName: "typetalk_refresh",
     paddleApiKey: "pdl_test_typetalk",
     paddleWebhookSecret: "pdlwhsec_typetalk",
     paddlePriceIdProMonthly: "pri_monthly",
@@ -93,15 +95,26 @@ describe("email providers", () => {
     expect(payload.text).toContain("123456");
   });
 
-  it("refuses to use the logging provider outside tests", () => {
+  it("refuses to use the logging provider in production runtimes", () => {
     expect(() => createEmailProvider(createConfig({
+      appEnv: "production",
       emailProviderMode: "log"
-    }))).toThrow("A real email provider must be configured for non-test runtimes.");
+    }))).toThrow("A real email provider must be configured for production runtimes.");
   });
 
   it("uses the logging provider only in test mode", () => {
     const provider = createEmailProvider(createConfig({
       nodeEnv: "test",
+      emailProviderMode: "log"
+    }));
+
+    expect(provider).toBeInstanceOf(LoggingEmailProvider);
+  });
+
+  it("allows the logging provider in non-production staging-like environments", () => {
+    const provider = createEmailProvider(createConfig({
+      nodeEnv: "production",
+      appEnv: "staging",
       emailProviderMode: "log"
     }));
 

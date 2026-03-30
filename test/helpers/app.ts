@@ -8,7 +8,11 @@ import { AppError } from "../../src/lib/app-error";
 import type { ErrorTracker } from "../../src/lib/error-tracking";
 import { createPrismaClient } from "../../src/lib/prisma";
 import type { EmailProvider, SendOtpInput } from "../../src/lib/email-provider";
-import type { GoogleIdentityProfile, GoogleVerifier } from "../../src/modules/auth/google";
+import type {
+  GoogleIdentityProfile,
+  GoogleTokenAudience,
+  GoogleVerifier
+} from "../../src/modules/auth/google";
 import { AuthRateLimiter, createAuthRateLimiter } from "../../src/modules/auth/rate-limiter";
 import { AuthRepository } from "../../src/modules/auth/repository";
 import { parseGooglePlayRtdnPayload } from "../../src/modules/billing/google-play";
@@ -66,18 +70,30 @@ export class MemoryEmailProvider implements EmailProvider {
 export class StubGoogleVerifier implements GoogleVerifier {
   private readonly profiles = new Map<string, GoogleIdentityProfile>();
 
-  setProfile(idToken: string, profile: GoogleIdentityProfile): void {
-    this.profiles.set(idToken, profile);
+  setProfile(
+    idToken: string,
+    profile: GoogleIdentityProfile,
+    audience: GoogleTokenAudience | "any" = "any"
+  ): void {
+    this.profiles.set(this.buildKey(idToken, audience), profile);
   }
 
-  async verifyIdToken(idToken: string): Promise<GoogleIdentityProfile> {
-    const profile = this.profiles.get(idToken);
+  async verifyIdToken(
+    idToken: string,
+    audience: GoogleTokenAudience = "native"
+  ): Promise<GoogleIdentityProfile> {
+    const profile = this.profiles.get(this.buildKey(idToken, audience))
+      ?? this.profiles.get(this.buildKey(idToken, "any"));
 
     if (!profile) {
       throw new AppError(401, "invalid_google_token", "Google token is invalid.");
     }
 
     return profile;
+  }
+
+  private buildKey(idToken: string, audience: GoogleTokenAudience | "any"): string {
+    return `${audience}:${idToken}`;
   }
 }
 

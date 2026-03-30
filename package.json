@@ -21,6 +21,7 @@
     "prisma:validate": "prisma validate"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.1.0",
     "@prisma/client": "^6.6.0",
     "dotenv": "^16.4.7",
